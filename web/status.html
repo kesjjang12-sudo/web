@@ -3,44 +3,43 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>은성이 리포트 💚</title>
+<title>은성이 리포트 💙</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  body { background:#0F1115; color:#E9EDF2; font-family:-apple-system,'Noto Sans KR',sans-serif; min-height:100vh; }
-  .wrap { max-width:430px; margin:0 auto; padding:20px 16px 40px; }
-  .title { font-size:20px; font-weight:900; margin:6px 0 2px; }
-  .title em { font-style:normal; color:#57D9A3; }
-  .sub { color:#8C96A4; font-size:12px; }
-  .ddays { display:flex; gap:10px; margin:16px 0 12px; }
-  .dday { flex:1; border:1px solid #272E39; border-radius:16px; padding:14px 16px; }
-  .dday .tag { font-size:11px; letter-spacing:.14em; color:#8C96A4; font-weight:700; }
-  .dday .num { font-size:26px; font-weight:800; margin-top:2px; }
-  .dday .since { font-size:11px; color:#5C6674; margin-top:2px; }
-  .dday.sober { background:linear-gradient(145deg,#123328,#161A21 70%); } .dday.sober .num{ color:#57D9A3; }
-  .dday.smoke { background:linear-gradient(145deg,#12293B,#161A21 70%); } .dday.smoke .num{ color:#6FB4F0; }
-  .month { background:#161A21; border:1px solid #272E39; border-radius:16px; padding:16px; margin-bottom:6px; }
-  .mtitle { color:#8C96A4; font-weight:700; font-size:14px; text-align:center; }
-  .total { font-size:30px; font-weight:800; margin-top:6px; }
-  .total small { font-size:16px; color:#8C96A4; font-weight:600; }
-  .cats { margin-top:14px; display:grid; gap:9px; }
-  .cat-row { display:grid; grid-template-columns:64px 1fr 80px; align-items:center; gap:10px; font-size:13px; }
-  .cat-row .name { color:#8C96A4; }
-  .cat-row .bar { height:8px; border-radius:4px; background:#1E242E; overflow:hidden; }
+  body { background:#101013; color:#E5E8EB; font-family:-apple-system,'Noto Sans KR',sans-serif; min-height:100vh; }
+  .wrap { max-width:430px; margin:0 auto; padding:22px 20px 48px; }
+  .title { font-size:21px; font-weight:800; letter-spacing:-.02em; margin:8px 0 2px; }
+  .sub { color:#6B7684; font-size:12px; }
+  .ddays { display:flex; gap:12px; margin:18px 0 12px; }
+  .dday { flex:1; background:#17171C; border-radius:20px; padding:18px; }
+  .dday .tag { font-size:13px; color:#8B95A1; font-weight:600; }
+  .dday .num { font-size:26px; font-weight:800; margin-top:4px; letter-spacing:-.02em; }
+  .dday .since { font-size:12px; color:#6B7684; margin-top:3px; }
+  .dday.sober .num{ color:#16C47F; } .dday.smoke .num{ color:#4E9BFA; }
+  .month { background:#17171C; border-radius:20px; padding:20px; margin-bottom:12px; }
+  .mtitle { color:#8B95A1; font-size:14px; }
+  .total { font-size:34px; font-weight:800; margin-top:2px; letter-spacing:-.03em; }
+  .cats { margin-top:18px; display:grid; gap:11px; }
+  .cat-row { display:grid; grid-template-columns:66px 1fr 86px; align-items:center; gap:12px; font-size:14px; }
+  .cat-row .name { color:#8B95A1; }
+  .cat-row .bar { height:7px; border-radius:4px; background:#26262C; overflow:hidden; }
   .cat-row .bar i { display:block; height:100%; border-radius:4px; }
   .cat-row .amt { text-align:right; font-weight:600; }
-  .day-label { font-size:12px; color:#5C6674; font-weight:700; margin:14px 4px 8px; display:flex; justify-content:space-between; }
-  .item { display:flex; align-items:center; gap:12px; background:#161A21; border:1px solid #272E39; border-radius:14px; padding:12px 14px; margin-bottom:8px; }
-  .dot { width:38px; height:38px; border-radius:12px; flex:none; display:grid; place-items:center; font-size:13px; font-weight:800; color:#10141A; }
+  .day-card { background:#17171C; border-radius:20px; padding:8px 18px; margin-bottom:12px; }
+  .day-head { display:flex; justify-content:space-between; padding:12px 0; color:#6B7684; font-size:13px; font-weight:600; }
+  .item { display:flex; align-items:center; gap:14px; padding:11px 0; }
+  .dot { width:42px; height:42px; border-radius:21px; flex:none; display:grid; place-items:center; }
+  .dot i { width:14px; height:14px; border-radius:7px; display:block; }
   .mid { flex:1; min-width:0; }
-  .m-name { font-weight:700; font-size:14.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .m-sub { font-size:11.5px; color:#5C6674; margin-top:1px; }
-  .m-amt { font-weight:700; font-size:14.5px; text-align:right; }
-  .empty { color:#8C96A4; text-align:center; padding:30px 0; font-size:13px; line-height:20px; }
+  .m-name { font-weight:700; font-size:15.5px; letter-spacing:-.02em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .m-sub { font-size:12.5px; color:#6B7684; margin-top:2px; }
+  .m-amt { font-weight:700; font-size:15.5px; letter-spacing:-.02em; }
+  .empty { color:#8B95A1; text-align:center; padding:34px 0; font-size:14px; line-height:22px; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <div class="title">클린<em>페이</em> · 은성이 리포트</div>
+  <div class="title">클린페이 · 은성이 리포트</div>
   <div class="sub" id="updated">불러오는 중...</div>
 
   <div class="ddays">
@@ -49,7 +48,7 @@
   </div>
 
   <div class="month">
-    <div class="mtitle" id="mtitle">이번 달 지출</div>
+    <div class="mtitle" id="mtitle">이번 달 쓴 돈</div>
     <div class="total" id="total">-</div>
     <div class="cats" id="cats"></div>
   </div>
@@ -88,7 +87,7 @@ function dayLabel(d){
 // D-day는 데이터 없이도 표시
 for (const [k, from] of Object.entries(QUIT)) {
   const id = k === 'sober' ? 'Sober' : 'Smoke';
-  document.getElementById('dday'+id).textContent = 'D+' + days(from);
+  document.getElementById('dday'+id).textContent = days(from) + '일째';
   const d = new Date(from);
   document.getElementById('since'+id).textContent = `${d.getMonth()+1}월 ${d.getDate()}일부터`;
 }
@@ -102,8 +101,8 @@ async function load(){
   });
   const rows = await res.json();
   document.getElementById('updated').textContent = '업데이트: ' + new Date().toLocaleString('ko-KR');
-  document.getElementById('mtitle').textContent = `${now.getMonth()+1}월 지출`;
-  document.getElementById('total').innerHTML = won(rows.reduce((s,r)=>s+r.amount,0)) + '<small> 원</small>';
+  document.getElementById('mtitle').textContent = `${now.getMonth()+1}월에 쓴 돈`;
+  document.getElementById('total').textContent = won(rows.reduce((s,r)=>s+r.amount,0)) + '원';
 
   // 카테고리 바
   const byCat = {};
@@ -112,7 +111,7 @@ async function load(){
   const max = catRows[0] ? catRows[0][1] : 1;
   document.getElementById('cats').innerHTML = catRows.map(([k,v])=>`
     <div class="cat-row"><span class="name">${CATS[k].label}</span>
-      <span class="bar"><i style="width:${Math.max(6,v/max*100)}%;background:${CATS[k].color}"></i></span>
+      <span class="bar"><i style="width:${Math.max(5,v/max*100)}%;background:${CATS[k].color}"></i></span>
       <span class="amt">${won(v)}원</span></div>`).join('');
 
   // 날짜별 내역
@@ -124,16 +123,18 @@ async function load(){
     g.items.push(r);
   });
   document.getElementById('list').innerHTML = groups.map(g=>`
-    <div class="day-label"><span>${g.label}</span><span>${won(g.items.reduce((s,x)=>s+x.amount,0))}원</span></div>
-    ${g.items.map(r=>{
-      const c = CATS[r.category] ? CATS[r.category] : CATS.etc;
-      const d = new Date(r.ts);
-      const hm = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
-      return `<div class="item">
-        <div class="dot" style="background:${c.color}">${c.label[0]}</div>
-        <div class="mid"><div class="m-name">${r.merchant}</div><div class="m-sub">${hm} · ${c.label}</div></div>
-        <div class="m-amt">${won(r.amount)}원</div></div>`;
-    }).join('')}`).join('') || '<div class="empty">이번 달 기록이 아직 없어요</div>';
+    <div class="day-card">
+      <div class="day-head"><span>${g.label}</span><span>${won(g.items.reduce((s,x)=>s+x.amount,0))}원</span></div>
+      ${g.items.map(r=>{
+        const c = CATS[r.category] ? CATS[r.category] : CATS.etc;
+        const d = new Date(r.ts);
+        const hm = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+        return `<div class="item">
+          <div class="dot" style="background:${c.color}26"><i style="background:${c.color}"></i></div>
+          <div class="mid"><div class="m-name">${r.merchant}</div><div class="m-sub">${hm} · ${c.label}</div></div>
+          <div class="m-amt">${won(r.amount)}원</div></div>`;
+      }).join('')}
+    </div>`).join('') || '<div class="empty">이번 달 기록이 아직 없어요</div>';
 }
 load();
 setInterval(load, 60000);
