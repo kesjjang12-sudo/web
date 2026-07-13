@@ -13,11 +13,18 @@ import { QUIT_GOALS, CATEGORIES, SUPABASE_URL } from './src/config';
 const C = {
   bg:'#101013', card:'#17171C', card2:'#26262C', press:'#2E2E36',
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
-  blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', gold:'#E5B84B',
+  blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
 const CAT = Object.fromEntries(CATEGORIES.map(c => [c.key, c]));
 const won = n => n.toLocaleString('ko-KR');
 const DAY_NAMES = ['일','월','화','수','목','금','토'];
+
+// 32,400 → "3.2만" / 6,800 → "6.8천" (달력 칸용 축약)
+function fmtShort(n) {
+  if (n >= 10000) { const v = n / 10000; return (v >= 10 ? Math.round(v) : +v.toFixed(1)) + '만'; }
+  if (n >= 1000) return +(n / 1000).toFixed(1) + '천';
+  return String(n);
+}
 
 function dayLabel(d) {
   const now = new Date();
@@ -46,6 +53,8 @@ export default function App() {
   const [payments, setPayments] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [monthOffset, setMonthOffset] = useState(0); // 0=이번달, -1=지난달 ...
+  const [view, setView] = useState('list');          // 'list' | 'cal'
+  const [selDay, setSelDay] = useState(null);        // 달력에서 선택한 일자 (숫자)
   const [pickTarget, setPickTarget] = useState(null); // 카테고리 바꿀 결제
   const [adding, setAdding] = useState(false);        // 직접 추가 모달
   const [addName, setAddName] = useState('');
@@ -71,37 +80,39 @@ export default function App() {
     setRefreshing(true); await load(); setRefreshing(false);
   }, [load]);
 
-  // ── 이번 달 데이터 ──
+  // ── 보고 있는 달 데이터 ──
   const now = new Date();
   const viewYM = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
-  const monthPays = useMemo(() => payments.filter(p => {
+  const inMonth = (p, ym) => {
     const d = new Date(p.ts);
-    return d.getFullYear() === viewYM.getFullYear() && d.getMonth() === viewYM.getMonth();
-  }), [payments, monthOffset]);
+    return d.getFullYear() === ym.getFullYear() && d.getMonth() === ym.getMonth();
+  };
+  const monthPays = useMemo(() => payments.filter(p => inMonth(p, viewYM)), [payments, monthOffset]);
   const total = monthPays.reduce((s, p) => s + p.amount, 0);
 
-  // 지난달 같은 기간(1일~오늘 일자) 대비
-  const delta = useMemo(() => {
-    if (monthOffset !== 0) return null;
-    const prevYM = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const prevSame = payments.filter(p => {
-      const d = new Date(p.ts);
-      return d.getFullYear() === prevYM.getFullYear() && d.getMonth() === prevYM.getMonth()
-        && d.getDate() <= now.getDate();
-    }).reduce((s, p) => s + p.amount, 0);
-    if (prevSame === 0) return null;
-    return total - prevSame;
-  }, [payments, monthOffset, total]);
+  // 지난달 대비: 이번 달을 보고 있으면 "같은 기간(1일~오늘)" 비교, 과거 달은 한 달 전체 비교
+  const prevPays = useMemo(() => {
+    const prevYM = new Date(viewYM.getFullYear(), viewYM.getMonth() - 1, 1);
+    const sameWindow = monthOffset === 0;
+    return payments.filter(p => {
+      if (!inMonth(p, prevYM)) return false;
+      return sameWindow ? new Date(p.ts).getDate() <= now.getDate() : true;
+    });
+  }, [payments, monthOffset]);
+  const prevTotal = prevPays.reduce((s, p) => s + p.amount, 0);
+  const delta = prevTotal > 0 ? total - prevTotal : null;
 
-  // 카테고리별 합계 (금액 큰 순)
+  // 카테고리별 합계 + 지난달 대비 (금액 큰 순)
   const catRows = useMemo(() => {
-    const sums = {};
+    const sums = {}, prevSums = {};
     monthPays.forEach(p => { const k = CAT[p.category] ? p.category : 'etc'; sums[k] = (sums[k]||0) + p.amount; });
-    return Object.entries(sums).sort((a,b) => b[1]-a[1]);
-  }, [monthPays]);
+    prevPays.forEach(p => { const k = CAT[p.category] ? p.category : 'etc'; prevSums[k] = (prevSums[k]||0) + p.amount; });
+    return Object.entries(sums).sort((a,b) => b[1]-a[1])
+      .map(([k, v]) => [k, v, prevSums[k] != null ? v - prevSums[k] : null]);
+  }, [monthPays, prevPays]);
   const maxCat = catRows.length ? catRows[0][1] : 1;
 
-  // 날짜별 그룹
+  // 날짜별 그룹 (내역 뷰)
   const groups = useMemo(() => {
     const g = [];
     monthPays.forEach(p => {
@@ -112,6 +123,25 @@ export default function App() {
     });
     return g;
   }, [monthPays]);
+
+  // 달력 데이터: 일자별 합계 + 앞쪽 빈칸
+  const cal = useMemo(() => {
+    const y = viewYM.getFullYear(), m = viewYM.getMonth();
+    const daysInMonth = new Date(y, m + 1, 0).getDate();
+    const firstDow = new Date(y, m, 1).getDay();
+    const totals = {};
+    monthPays.forEach(p => { const d = new Date(p.ts).getDate(); totals[d] = (totals[d]||0) + p.amount; });
+    const cells = [];
+    for (let i = 0; i < firstDow; i++) cells.push(null);
+    for (let d = 1; d <= daysInMonth; d++) cells.push({ d, amt: totals[d] || 0 });
+    while (cells.length % 7 !== 0) cells.push(null);
+    return { cells, daysInMonth };
+  }, [monthPays, monthOffset]);
+
+  const selDayPays = selDay == null ? [] : monthPays
+    .filter(p => new Date(p.ts).getDate() === selDay)
+    .sort((a, b) => new Date(b.ts) - new Date(a.ts));
+  const selDayTotal = selDayPays.reduce((s, p) => s + p.amount, 0);
 
   // ── 액션 ──
   const pickCategory = useCallback(async (catKey) => {
@@ -149,6 +179,27 @@ export default function App() {
   }, []);
 
   const monthTitle = `${viewYM.getFullYear()}년 ${viewYM.getMonth()+1}월`;
+  const isThisMonth = monthOffset === 0;
+  const todayDate = now.getDate();
+
+  // 결제 행 렌더러 (내역 뷰 / 일자 상세 공용)
+  const renderItem = (p, fromDaySheet) => {
+    const cat = CAT[p.category] || CAT.etc;
+    return (
+      <TouchableOpacity key={p.id} style={s.item} activeOpacity={0.6}
+        onPress={() => { if (fromDaySheet) setSelDay(null); setPickTarget(p); }}
+        onLongPress={() => { if (fromDaySheet) setSelDay(null); confirmDelete(p); }} delayLongPress={450}>
+        <View style={[s.dot, { backgroundColor: cat.color + '26' }]}>
+          <View style={[s.dotCore, { backgroundColor: cat.color }]} />
+        </View>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={s.itemName} numberOfLines={1}>{p.merchant}</Text>
+          <Text style={s.itemSub}>{hhmm(p.ts)} · {srcName(p.app)} · {cat.label}</Text>
+        </View>
+        <Text style={s.itemAmt}>{won(p.amount)}원</Text>
+      </TouchableOpacity>
+    );
+  };
 
   return (
     <SafeAreaView style={s.root}>
@@ -189,65 +240,99 @@ export default function App() {
         {/* 월 요약 */}
         <View style={s.month}>
           <View style={s.monthHead}>
-            <TouchableOpacity onPress={() => setMonthOffset(o => o-1)} style={s.navBtn} hitSlop={8}>
+            <TouchableOpacity onPress={() => { setMonthOffset(o => o-1); setSelDay(null); }} style={s.navBtn} hitSlop={8}>
               <Text style={s.navT}>‹</Text>
             </TouchableOpacity>
             <Text style={s.monthTitle}>{monthTitle}</Text>
-            <TouchableOpacity onPress={() => setMonthOffset(o => Math.min(0, o+1))} style={s.navBtn} hitSlop={8}>
-              <Text style={[s.navT, monthOffset === 0 && { opacity: 0.25 }]}>›</Text>
+            <TouchableOpacity onPress={() => { setMonthOffset(o => Math.min(0, o+1)); setSelDay(null); }} style={s.navBtn} hitSlop={8}>
+              <Text style={[s.navT, isThisMonth && { opacity: 0.25 }]}>›</Text>
             </TouchableOpacity>
           </View>
-          <Text style={s.totalLabel}>{monthOffset === 0 ? '이번 달 쓴 돈' : '이 달에 쓴 돈'}</Text>
+          <Text style={s.totalLabel}>{isThisMonth ? '이번 달 쓴 돈' : '이 달에 쓴 돈'}</Text>
           <Text style={s.total}>{won(total)}원</Text>
           {delta !== null && (
             <View style={s.deltaPill}>
-              <Text style={[s.deltaT, { color: delta <= 0 ? C.blueText : '#F04452' }]}>
-                지난달보다 {won(Math.abs(delta))}원 {delta <= 0 ? '아끼는 중' : '더 쓰는 중'}
+              <Text style={[s.deltaT, { color: delta <= 0 ? C.blueText : C.red }]}>
+                지난달{isThisMonth ? ' 같은 기간' : ''}보다 {won(Math.abs(delta))}원 {delta <= 0 ? (isThisMonth ? '아끼는 중' : '아꼈어요') : (isThisMonth ? '더 쓰는 중' : '더 썼어요')}
               </Text>
             </View>
           )}
 
-          {/* 카테고리 바 */}
+          {/* 카테고리 바 + 지난달 대비 */}
           {catRows.length > 0 && (
-            <View style={{ marginTop: 18, gap: 11 }}>
-              {catRows.map(([k, v]) => (
+            <View style={{ marginTop: 18, gap: 12 }}>
+              {catRows.map(([k, v, d]) => (
                 <View key={k} style={s.catRow}>
                   <Text style={s.catName}>{CAT[k].label}</Text>
                   <View style={s.catBar}>
                     <View style={[s.catFill, { width: `${Math.max(5, v/maxCat*100)}%`, backgroundColor: CAT[k].color }]} />
                   </View>
-                  <Text style={s.catAmt}>{won(v)}원</Text>
+                  <View style={s.catAmtCol}>
+                    <Text style={s.catAmt}>{won(v)}원</Text>
+                    {d !== null && d !== 0 && (
+                      <Text style={[s.catDelta, { color: d < 0 ? C.blueText : C.red }]}>
+                        {d < 0 ? '▼' : '▲'} {fmtShort(Math.abs(d))}
+                      </Text>
+                    )}
+                  </View>
                 </View>
               ))}
             </View>
           )}
         </View>
 
-        {/* 내역: 날짜별 묶음 카드 */}
-        {groups.map(g => (
+        {/* 뷰 전환 탭 */}
+        <View style={s.tabs}>
+          <TouchableOpacity style={[s.tab, view === 'list' && s.tabOn]} onPress={() => setView('list')}>
+            <Text style={[s.tabT, view === 'list' && s.tabTOn]}>내역</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[s.tab, view === 'cal' && s.tabOn]} onPress={() => setView('cal')}>
+            <Text style={[s.tabT, view === 'cal' && s.tabTOn]}>달력</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* 내역 뷰: 날짜별 묶음 카드 */}
+        {view === 'list' && groups.map(g => (
           <View key={g.label} style={s.dayCard}>
             <View style={s.dayHead}>
               <Text style={s.dayHeadT}>{g.label}</Text>
-              <Text style={s.dayHeadAmt}>{won(g.items.reduce((s2,x)=>s2+x.amount,0))}원</Text>
+              <Text style={s.dayHeadT}>{won(g.items.reduce((s2,x)=>s2+x.amount,0))}원</Text>
             </View>
-            {g.items.map(p => {
-              const cat = CAT[p.category] || CAT.etc;
-              return (
-                <TouchableOpacity key={p.id} style={s.item} activeOpacity={0.6}
-                  onPress={() => setPickTarget(p)} onLongPress={() => confirmDelete(p)} delayLongPress={450}>
-                  <View style={[s.dot, { backgroundColor: cat.color + '26' }]}>
-                    <View style={[s.dotCore, { backgroundColor: cat.color }]} />
-                  </View>
-                  <View style={{ flex: 1, minWidth: 0 }}>
-                    <Text style={s.itemName} numberOfLines={1}>{p.merchant}</Text>
-                    <Text style={s.itemSub}>{hhmm(p.ts)} · {srcName(p.app)} · {cat.label}</Text>
-                  </View>
-                  <Text style={s.itemAmt}>{won(p.amount)}원</Text>
-                </TouchableOpacity>
-              );
-            })}
+            {g.items.map(p => renderItem(p, false))}
           </View>
         ))}
+
+        {/* 달력 뷰 */}
+        {view === 'cal' && (
+          <View style={s.calCard}>
+            <View style={s.calHead}>
+              {DAY_NAMES.map((d, i) => (
+                <Text key={d} style={[s.calDow, i === 0 && { color: '#C96A6A' }, i === 6 && { color: '#6A8FC9' }]}>{d}</Text>
+              ))}
+            </View>
+            {Array.from({ length: cal.cells.length / 7 }, (_, r) => (
+              <View key={r} style={s.calRow}>
+                {cal.cells.slice(r*7, r*7+7).map((cell, i) => {
+                  if (!cell) return <View key={i} style={s.calCell} />;
+                  const isToday = isThisMonth && cell.d === todayDate;
+                  const isFuture = isThisMonth && cell.d > todayDate;
+                  return (
+                    <TouchableOpacity key={i} style={[s.calCell, selDay === cell.d && s.calCellOn]}
+                      activeOpacity={0.6} disabled={isFuture}
+                      onPress={() => setSelDay(cell.d)}>
+                      <View style={[s.calDayWrap, isToday && s.calToday]}>
+                        <Text style={[s.calDay, isToday && { color: '#fff' }, isFuture && { color: '#3A3A42' }]}>{cell.d}</Text>
+                      </View>
+                      <Text style={s.calAmt} numberOfLines={1}>{cell.amt ? fmtShort(cell.amt) : ' '}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            ))}
+            <Text style={s.calHint}>날짜를 누르면 그날 쓴 내역이 보여요</Text>
+          </View>
+        )}
+
         {monthPays.length === 0 && (
           <Text style={s.empty}>아직 이 달 기록이 없어요.{'\n'}카드 결제 알림이 오면 자동으로 쌓이고,{'\n'}현금은 아래 + 버튼으로 직접 추가할 수 있어요.</Text>
         )}
@@ -268,6 +353,20 @@ export default function App() {
       <TouchableOpacity style={s.fab} activeOpacity={0.8} onPress={() => { setAddCat('food'); setAdding(true); }}>
         <Text style={s.fabT}>＋</Text>
       </TouchableOpacity>
+
+      {/* 달력 일자 상세 모달 */}
+      <Modal visible={selDay != null} transparent animationType="slide" onRequestClose={() => setSelDay(null)}>
+        <TouchableOpacity style={s.modalBg} activeOpacity={1} onPress={() => setSelDay(null)}>
+          <View style={s.modalCard} onStartShouldSetResponder={() => true}>
+            <View style={s.grabber} />
+            <Text style={s.modalTitle}>{viewYM.getMonth()+1}월 {selDay}일</Text>
+            <Text style={s.daySheetTotal}>{won(selDayTotal)}원</Text>
+            {selDayPays.length === 0
+              ? <Text style={s.emptySmall}>이날은 쓴 돈이 없어요 👍</Text>
+              : <ScrollView style={{ maxHeight: 380 }}>{selDayPays.map(p => renderItem(p, true))}</ScrollView>}
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       {/* 카테고리 선택 모달 */}
       <Modal visible={!!pickTarget} transparent animationType="slide" onRequestClose={() => setPickTarget(null)}>
@@ -351,18 +450,40 @@ const s = StyleSheet.create({
   catName: { color: C.sub, fontSize: 14, width: 66 },
   catBar: { flex: 1, height: 7, borderRadius: 4, backgroundColor: C.card2, overflow: 'hidden' },
   catFill: { height: '100%', borderRadius: 4 },
-  catAmt: { color: C.text, fontSize: 14, fontWeight: '600', width: 86, textAlign: 'right', letterSpacing: -0.3 },
+  catAmtCol: { width: 86, alignItems: 'flex-end' },
+  catAmt: { color: C.text, fontSize: 14, fontWeight: '600', letterSpacing: -0.3 },
+  catDelta: { fontSize: 10.5, fontWeight: '700', marginTop: 1 },
+
+  tabs: { flexDirection: 'row', backgroundColor: C.card, borderRadius: 14, padding: 4, marginBottom: 12 },
+  tab: { flex: 1, paddingVertical: 9, borderRadius: 11, alignItems: 'center' },
+  tabOn: { backgroundColor: C.card2 },
+  tabT: { color: C.faint, fontSize: 13.5, fontWeight: '700' },
+  tabTOn: { color: C.text },
 
   dayCard: { backgroundColor: C.card, borderRadius: 20, paddingHorizontal: 18, paddingVertical: 8, marginBottom: 12 },
   dayHead: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 12 },
   dayHeadT: { color: C.faint, fontSize: 13, fontWeight: '600' },
-  dayHeadAmt: { color: C.faint, fontSize: 13, fontWeight: '600' },
   item: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 11 },
   dot: { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center' },
   dotCore: { width: 14, height: 14, borderRadius: 7 },
   itemName: { color: C.text, fontWeight: '700', fontSize: 15.5, letterSpacing: -0.3 },
   itemSub: { color: C.faint, fontSize: 12.5, marginTop: 2 },
   itemAmt: { color: C.text, fontWeight: '700', fontSize: 15.5, letterSpacing: -0.3 },
+
+  calCard: { backgroundColor: C.card, borderRadius: 20, padding: 14, paddingBottom: 10, marginBottom: 12 },
+  calHead: { flexDirection: 'row', marginBottom: 6 },
+  calDow: { flex: 1, textAlign: 'center', color: C.faint, fontSize: 12, fontWeight: '600' },
+  calRow: { flexDirection: 'row' },
+  calCell: { flex: 1, alignItems: 'center', paddingVertical: 7, borderRadius: 12 },
+  calCellOn: { backgroundColor: C.card2 },
+  calDayWrap: { width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
+  calToday: { backgroundColor: C.blue },
+  calDay: { color: C.text, fontSize: 13.5, fontWeight: '600' },
+  calAmt: { color: C.sub, fontSize: 9.5, fontWeight: '600', marginTop: 1, minHeight: 12 },
+  calHint: { color: C.faint, fontSize: 11.5, textAlign: 'center', marginTop: 8, marginBottom: 4 },
+
+  daySheetTotal: { color: C.text, fontSize: 28, fontWeight: '800', letterSpacing: -0.8, marginTop: 2, marginBottom: 10 },
+  emptySmall: { color: C.sub, fontSize: 14, textAlign: 'center', paddingVertical: 22 },
 
   empty: { color: C.sub, fontSize: 14, lineHeight: 22, textAlign: 'center', marginVertical: 28 },
   testBtn: { backgroundColor: C.card, borderRadius: 14, padding: 14, alignItems: 'center' },
