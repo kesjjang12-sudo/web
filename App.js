@@ -30,6 +30,14 @@ function dayLabel(d) {
   return `${base} · ${DAY_NAMES[d.getDay()]}요일`;
 }
 const hhmm = iso => { const d = new Date(iso); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; };
+// 시작 당일을 1일째로 계산 (로컬 자정 기준 — UTC 파싱으로 하루 밀리는 것 방지)
+function daysSince(start) {
+  const [y, m, d] = start.split('-').map(Number);
+  const s = new Date(y, m - 1, d);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.round((today - s) / 86400000) + 1;
+}
 const srcName = app => !app || app === 'manual' ? '직접 입력' : app === 'test' ? '테스트'
   : /messaging/.test(app) ? '문자' : '카드 알림';
 
@@ -165,14 +173,14 @@ export default function App() {
         {/* D-day 카드 */}
         <View style={s.ddayRow}>
           {QUIT_GOALS.map((g, i) => {
-            const days = Math.floor((Date.now() - new Date(g.start).getTime()) / 86400000);
+            const days = daysSince(g.start);
             const color = i === 0 ? C.green : C.blueText;
-            const st = new Date(g.start);
+            const [, sm, sd] = g.start.split('-').map(Number);
             return (
               <View key={g.key} style={s.dday}>
                 <Text style={s.ddayTag}>{g.label}</Text>
                 <Text style={[s.ddayNum, { color }]}>{days}일째</Text>
-                <Text style={s.ddaySince}>{st.getMonth()+1}월 {st.getDate()}일부터</Text>
+                <Text style={s.ddaySince}>{sm}월 {sd}일부터</Text>
               </View>
             );
           })}

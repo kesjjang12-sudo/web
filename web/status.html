@@ -73,7 +73,14 @@ const CATS = {
 };
 const won = n => Number(n).toLocaleString('ko-KR');
 const DAYS = ['일','월','화','수','목','금','토'];
-const days = from => Math.floor((Date.now() - new Date(from)) / 864e5);
+// 시작 당일을 1일째로 계산 (로컬 자정 기준)
+function days(from){
+  const [y,m,d] = from.split('-').map(Number);
+  const s = new Date(y, m-1, d);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.round((today - s) / 864e5) + 1;
+}
 
 function dayLabel(d){
   const now = new Date();
