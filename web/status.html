@@ -3,89 +3,137 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>은성이 클린 리포트 💚</title>
+<title>은성이 리포트 💚</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  body { background:#0f1115; color:#eef1f6; font-family:-apple-system,'Noto Sans KR',sans-serif; min-height:100vh; }
-  .wrap { max-width:430px; margin:0 auto; padding:20px; }
-  .title { font-size:20px; font-weight:900; margin:10px 0 2px; }
-  .sub { color:#8b93a5; font-size:13px; }
-  .streak { background:#1a1e26; border:1px solid #2a3040; border-radius:20px; padding:28px; text-align:center; margin:18px 0 12px; }
-  .days { font-size:58px; font-weight:900; color:#4fc08d; }
-  .badge { font-size:14px; font-weight:700; margin-top:8px; }
-  .card { background:#1a1e26; border:1px solid #2a3040; border-radius:14px; padding:14px; margin-bottom:9px; }
-  .head { display:flex; justify-content:space-between; font-size:14px; font-weight:700; }
-  .meta { color:#8b93a5; font-size:12px; margin-top:3px; }
-  .memo { color:#e8b84f; font-size:12px; margin-top:6px; }
-  .green{color:#4fc08d} .red{color:#e2604f} .gray{color:#8b93a5}
-  .sec { font-size:15px; font-weight:800; margin:18px 0 10px; }
-  .empty { color:#8b93a5; text-align:center; padding:30px 0; font-size:13px; line-height:20px; }
+  body { background:#0F1115; color:#E9EDF2; font-family:-apple-system,'Noto Sans KR',sans-serif; min-height:100vh; }
+  .wrap { max-width:430px; margin:0 auto; padding:20px 16px 40px; }
+  .title { font-size:20px; font-weight:900; margin:6px 0 2px; }
+  .title em { font-style:normal; color:#57D9A3; }
+  .sub { color:#8C96A4; font-size:12px; }
+  .ddays { display:flex; gap:10px; margin:16px 0 12px; }
+  .dday { flex:1; border:1px solid #272E39; border-radius:16px; padding:14px 16px; }
+  .dday .tag { font-size:11px; letter-spacing:.14em; color:#8C96A4; font-weight:700; }
+  .dday .num { font-size:26px; font-weight:800; margin-top:2px; }
+  .dday .since { font-size:11px; color:#5C6674; margin-top:2px; }
+  .dday.sober { background:linear-gradient(145deg,#123328,#161A21 70%); } .dday.sober .num{ color:#57D9A3; }
+  .dday.smoke { background:linear-gradient(145deg,#12293B,#161A21 70%); } .dday.smoke .num{ color:#6FB4F0; }
+  .month { background:#161A21; border:1px solid #272E39; border-radius:16px; padding:16px; margin-bottom:6px; }
+  .mtitle { color:#8C96A4; font-weight:700; font-size:14px; text-align:center; }
+  .total { font-size:30px; font-weight:800; margin-top:6px; }
+  .total small { font-size:16px; color:#8C96A4; font-weight:600; }
+  .cats { margin-top:14px; display:grid; gap:9px; }
+  .cat-row { display:grid; grid-template-columns:64px 1fr 80px; align-items:center; gap:10px; font-size:13px; }
+  .cat-row .name { color:#8C96A4; }
+  .cat-row .bar { height:8px; border-radius:4px; background:#1E242E; overflow:hidden; }
+  .cat-row .bar i { display:block; height:100%; border-radius:4px; }
+  .cat-row .amt { text-align:right; font-weight:600; }
+  .day-label { font-size:12px; color:#5C6674; font-weight:700; margin:14px 4px 8px; display:flex; justify-content:space-between; }
+  .item { display:flex; align-items:center; gap:12px; background:#161A21; border:1px solid #272E39; border-radius:14px; padding:12px 14px; margin-bottom:8px; }
+  .dot { width:38px; height:38px; border-radius:12px; flex:none; display:grid; place-items:center; font-size:13px; font-weight:800; color:#10141A; }
+  .mid { flex:1; min-width:0; }
+  .m-name { font-weight:700; font-size:14.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .m-sub { font-size:11.5px; color:#5C6674; margin-top:1px; }
+  .m-amt { font-weight:700; font-size:14.5px; text-align:right; }
+  .empty { color:#8C96A4; text-align:center; padding:30px 0; font-size:13px; line-height:20px; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <div class="title">💚 은성이 클린 리포트</div>
+  <div class="title">클린<em>페이</em> · 은성이 리포트</div>
   <div class="sub" id="updated">불러오는 중...</div>
-  <div class="streak">
-    <div class="sub">연속 클린</div>
-    <div class="days" id="streak">-</div>
-    <div class="badge" id="todayBadge"></div>
+
+  <div class="ddays">
+    <div class="dday sober"><div class="tag">금주</div><div class="num" id="ddaySober">-</div><div class="since" id="sinceSober"></div></div>
+    <div class="dday smoke"><div class="tag">금연</div><div class="num" id="ddaySmoke">-</div><div class="since" id="sinceSmoke"></div></div>
   </div>
-  <div class="sec">오늘 결제 내역</div>
-  <div id="todayList"><div class="empty">불러오는 중...</div></div>
-  <div class="sec">최근 7일</div>
-  <div id="weekList"></div>
+
+  <div class="month">
+    <div class="mtitle" id="mtitle">이번 달 지출</div>
+    <div class="total" id="total">-</div>
+    <div class="cats" id="cats"></div>
+  </div>
+
+  <div id="list"><div class="empty">불러오는 중...</div></div>
 </div>
 <script>
-// ▼▼▼ 여기 두 줄만 채우면 됩니다 (앱의 config.js와 동일한 값) ▼▼▼
+// ▼▼▼ 여기만 채우면 됩니다 (앱의 config.js와 동일한 값) ▼▼▼
 const SUPABASE_URL = '';
 const SUPABASE_ANON_KEY = '';
+const QUIT = { sober: '2026-07-13', smoke: '2026-07-13' };  // 금주/금연 시작일
 // ▲▲▲
 
-const won = n => Number(n).toLocaleString('ko-KR')+'원';
-const fdt = iso => { const d=new Date(iso); return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; };
+const CATS = {
+  food:   {label:'식비',      color:'#F2917A'},
+  cafe:   {label:'카페·간식', color:'#E5B84B'},
+  transit:{label:'교통',      color:'#6FB4F0'},
+  shop:   {label:'쇼핑',      color:'#B79CF5'},
+  living: {label:'생활·마트', color:'#5BC8C0'},
+  sub:    {label:'구독·통신', color:'#7F8EF2'},
+  etc:    {label:'기타',      color:'#97A1B0'},
+};
+const won = n => Number(n).toLocaleString('ko-KR');
+const DAYS = ['일','월','화','수','목','금','토'];
+const days = from => Math.floor((Date.now() - new Date(from)) / 864e5);
+
+function dayLabel(d){
+  const now = new Date();
+  const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const t1 = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diff = Math.round((t0 - t1) / 864e5);
+  const base = `${d.getMonth()+1}월 ${d.getDate()}일`;
+  return diff === 0 ? base+' · 오늘' : diff === 1 ? base+' · 어제' : base+' · '+DAYS[d.getDay()]+'요일';
+}
+
+// D-day는 데이터 없이도 표시
+for (const [k, from] of Object.entries(QUIT)) {
+  const id = k === 'sober' ? 'Sober' : 'Smoke';
+  document.getElementById('dday'+id).textContent = 'D+' + days(from);
+  const d = new Date(from);
+  document.getElementById('since'+id).textContent = `${d.getMonth()+1}월 ${d.getDate()}일부터`;
+}
 
 async function load(){
   if(!SUPABASE_URL){ document.getElementById('updated').textContent='설정이 필요합니다 (SUPABASE_URL)'; return; }
-  const since = new Date(Date.now()-7*86400000).toISOString();
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/payments?ts=gte.${since}&order=ts.desc&select=*`, {
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/payments?ts=gte.${monthStart}&order=ts.desc&select=*`, {
     headers:{ apikey:SUPABASE_ANON_KEY, Authorization:`Bearer ${SUPABASE_ANON_KEY}` }
   });
   const rows = await res.json();
   document.getElementById('updated').textContent = '업데이트: ' + new Date().toLocaleString('ko-KR');
+  document.getElementById('mtitle').textContent = `${now.getMonth()+1}월 지출`;
+  document.getElementById('total').innerHTML = won(rows.reduce((s,r)=>s+r.amount,0)) + '<small> 원</small>';
 
-  // 스트릭: 최근 실패 찾기 (7일 넘게 실패 없으면 별도 조회)
-  let lastFail = rows.find(r=>r.status==='실패');
-  if(!lastFail){
-    const rf = await fetch(`${SUPABASE_URL}/rest/v1/payments?status=eq.실패&order=ts.desc&limit=1&select=ts`, {
-      headers:{ apikey:SUPABASE_ANON_KEY, Authorization:`Bearer ${SUPABASE_ANON_KEY}` }});
-    const fr = await rf.json(); lastFail = fr[0];
-  }
-  // 실패가 아예 없으면 가장 오래된 기록부터 계산
-  let fromTs;
-  if (lastFail) fromTs = new Date(lastFail.ts);
-  else {
-    const ro = await fetch(`${SUPABASE_URL}/rest/v1/payments?order=ts.asc&limit=1&select=ts`, {
-      headers:{ apikey:SUPABASE_ANON_KEY, Authorization:`Bearer ${SUPABASE_ANON_KEY}` }});
-    const or_ = await ro.json(); fromTs = or_[0] ? new Date(or_[0].ts) : new Date();
-  }
-  document.getElementById('streak').textContent = Math.floor((Date.now()-fromTs)/86400000)+'일';
+  // 카테고리 바
+  const byCat = {};
+  rows.forEach(r => { const k = CATS[r.category] ? r.category : 'etc'; byCat[k]=(byCat[k]||0)+r.amount; });
+  const catRows = Object.entries(byCat).sort((a,b)=>b[1]-a[1]);
+  const max = catRows[0] ? catRows[0][1] : 1;
+  document.getElementById('cats').innerHTML = catRows.map(([k,v])=>`
+    <div class="cat-row"><span class="name">${CATS[k].label}</span>
+      <span class="bar"><i style="width:${Math.max(6,v/max*100)}%;background:${CATS[k].color}"></i></span>
+      <span class="amt">${won(v)}원</span></div>`).join('');
 
-  const today = new Date().toDateString();
-  const todayRows = rows.filter(r=>new Date(r.ts).toDateString()===today);
-  const clean = todayRows.length>0 && todayRows.every(r=>r.status==='클린');
-  const tb = document.getElementById('todayBadge');
-  if(todayRows.length===0){ tb.textContent='오늘 결제 없음'; tb.className='badge gray'; }
-  else if(clean){ tb.textContent=`오늘 ${todayRows.length}건 모두 클린 ✓`; tb.className='badge green'; }
-  else { tb.textContent='오늘 위험 결제가 있어요'; tb.className='badge red'; }
-
-  const card = r => `<div class="card"><div class="head"><span>${r.merchant}</span>
-    <span class="${r.status==='클린'?'green':'red'}">${r.status==='클린'?'클린 ✓':'실패'}</span></div>
-    <div class="meta">${fdt(r.ts)} · ${won(r.amount)}</div>
-    ${r.memo?`<div class="memo">📝 ${r.memo}</div>`:''}</div>`;
-
-  document.getElementById('todayList').innerHTML = todayRows.length? todayRows.map(card).join('') : '<div class="empty">오늘은 아직 결제가 없어요</div>';
-  document.getElementById('weekList').innerHTML = rows.filter(r=>new Date(r.ts).toDateString()!==today).map(card).join('') || '<div class="empty">기록 없음</div>';
+  // 날짜별 내역
+  const groups = [];
+  rows.forEach(r => {
+    const label = dayLabel(new Date(r.ts));
+    let g = groups.find(x=>x.label===label);
+    if(!g){ g={label, items:[]}; groups.push(g); }
+    g.items.push(r);
+  });
+  document.getElementById('list').innerHTML = groups.map(g=>`
+    <div class="day-label"><span>${g.label}</span><span>${won(g.items.reduce((s,x)=>s+x.amount,0))}원</span></div>
+    ${g.items.map(r=>{
+      const c = CATS[r.category] ? CATS[r.category] : CATS.etc;
+      const d = new Date(r.ts);
+      const hm = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+      return `<div class="item">
+        <div class="dot" style="background:${c.color}">${c.label[0]}</div>
+        <div class="mid"><div class="m-name">${r.merchant}</div><div class="m-sub">${hm} · ${c.label}</div></div>
+        <div class="m-amt">${won(r.amount)}원</div></div>`;
+    }).join('')}`).join('') || '<div class="empty">이번 달 기록이 아직 없어요</div>';
 }
 load();
 setInterval(load, 60000);

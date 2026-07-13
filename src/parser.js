@@ -1,9 +1,9 @@
-import { RISK_KEYWORDS } from './config';
+import { CATEGORY_RULES } from './config';
 
 // ---------------------------------------------
 // 결제 알림 텍스트에서 금액과 가맹점명을 추출
 // 예시 알림들:
-//  "신한카드승인 김*성 12,000원 일시불 07/13 20:11 OO포차"
+//  "신한카드승인 김*성 12,000원 일시불 07/13 20:11 김밥천국"
 //  "김은성님 07/13 20:11 현대카드 승인 45,000원 일시불 스타벅스강남점"
 //  "토스 | 스타벅스에서 5,500원 결제됐어요"
 // ---------------------------------------------
@@ -55,31 +55,20 @@ export function parsePayment(rawText) {
 }
 
 // ---------------------------------------------
-// 위험 키워드 판별
+// 가맹점 이름 → 카테고리 추측
+// memory: 사용자가 직접 지정해서 기억된 { 가맹점명: 카테고리키 } 맵 (store.js가 관리)
 // ---------------------------------------------
-export function isRisky(merchant) {
-  const m = merchant.toLowerCase();
-
-  // 일반 키워드
-  for (const kw of RISK_KEYWORDS) {
-    if (m.includes(kw.toLowerCase())) return kw;
+export function guessCategory(merchant, memory = {}) {
+  if (!merchant) return 'etc';
+  // 1) 기억된 가맹점이면 그대로 (부분 일치 포함: "스타벅스 강남점"도 "스타벅스" 기억을 따름)
+  if (memory[merchant]) return memory[merchant];
+  for (const [name, cat] of Object.entries(memory)) {
+    if (merchant.includes(name) || name.includes(merchant)) return cat;
   }
-  // '바' - 단어 끝에 올 때만 (스시바, 와인바 O / 바나나, 바른치킨 X)
-  if (/(?:^|\s)\S*바$/.test(merchant) && !/바나나|바른|바다|바비큐|바게트/.test(merchant)) {
-    return '바';
+  // 2) 키워드 규칙
+  const lower = merchant.toLowerCase();
+  for (const [cat, keywords] of Object.entries(CATEGORY_RULES)) {
+    if (keywords.some(kw => lower.includes(kw.toLowerCase()))) return cat;
   }
-  // '대리' - '대리점'은 제외
-  if (merchant.includes('대리') && !merchant.includes('대리점')) {
-    return '대리';
-  }
-  return null;
-}
-
-export function classify(payment) {
-  const hit = isRisky(payment.merchant);
-  return {
-    ...payment,
-    status: hit ? '실패' : '클린',
-    matchedKeyword: hit,
-  };
+  return 'etc';
 }

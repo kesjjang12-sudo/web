@@ -1,13 +1,22 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config';
+import { guessCategory } from './parser';
 
 const KEY = 'payments_v1';
-const START_KEY = 'quit_start_v1';
+const MERCHANT_CAT_KEY = 'merchant_categories_v1';
 
 export async function getPayments() {
   try {
     const raw = await AsyncStorage.getItem(KEY);
-    return raw ? JSON.parse(raw) : [];
+    const list = raw ? JSON.parse(raw) : [];
+    // 예전 버전(클린/실패) 기록 마이그레이션: category 없으면 추측해서 채움
+    let migrated = false;
+    const memory = await getMerchantMap();
+    for (const p of list) {
+      if (!p.category) { p.category = guessCategory(p.merchant, memory); migrated = true; }
+    }
+    if (migrated) await AsyncStorage.setItem(KEY, JSON.stringify(list));
+    return list;
   } catch { return []; }
 }
 
@@ -17,37 +26,43 @@ export async function savePayment(record) {
   const dup = list.find(p => p.merchant === record.merchant && p.amount === record.amount
     && Math.abs(new Date(p.ts) - new Date(record.ts)) < 10000);
   if (dup) return list;
-  const next = [record, ...list].slice(0, 2000);
+  if (!record.category) {
+    const memory = await getMerchantMap();
+    record.category = guessCategory(record.merchant, memory);
+  }
+  const next = [record, ...list].slice(0, 5000);
   await AsyncStorage.setItem(KEY, JSON.stringify(next));
   syncToSupabase(record); // 실패해도 앱 동작에는 지장 없음
   return next;
 }
 
-export async function updateMemo(id, memo) {
+// 카테고리 변경 + 같은 가맹점 기억 (기억하면 이후 자동 분류에 반영)
+export async function updateCategory(id, category) {
   const list = await getPayments();
-  const next = list.map(p => p.id === id ? { ...p, memo } : p);
+  const rec = list.find(p => p.id === id);
+  if (!rec) return list;
+  rec.category = category;
+  await AsyncStorage.setItem(KEY, JSON.stringify(list));
+  const memory = await getMerchantMap();
+  memory[rec.merchant] = category;
+  await AsyncStorage.setItem(MERCHANT_CAT_KEY, JSON.stringify(memory));
+  syncToSupabase(rec);
+  return list;
+}
+
+export async function deletePayment(id) {
+  const list = await getPayments();
+  const next = list.filter(p => p.id !== id);
   await AsyncStorage.setItem(KEY, JSON.stringify(next));
-  const rec = next.find(p => p.id === id);
-  if (rec) syncToSupabase(rec);
+  deleteFromSupabase(id);
   return next;
 }
 
-export async function getQuitStart() {
-  let v = await AsyncStorage.getItem(START_KEY);
-  if (!v) {
-    v = new Date().toISOString();
-    await AsyncStorage.setItem(START_KEY, v);
-  }
-  return v;
-}
-
-// 연속 클린 일수: 마지막 '실패' 이후 (실패 없으면 시작일 이후)
-export async function getStreak() {
-  const list = await getPayments();
-  const start = await getQuitStart();
-  const lastFail = list.find(p => p.status === '실패');
-  const from = lastFail ? new Date(lastFail.ts) : new Date(start);
-  return Math.floor((Date.now() - from.getTime()) / 86400000);
+export async function getMerchantMap() {
+  try {
+    const raw = await AsyncStorage.getItem(MERCHANT_CAT_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
 }
 
 // ---------------- Supabase 동기화 ----------------
@@ -67,12 +82,21 @@ export async function syncToSupabase(record) {
         ts: record.ts,
         merchant: record.merchant,
         amount: record.amount,
-        status: record.status,
+        category: record.category || 'etc',
         memo: record.memo || null,
-        matched_keyword: record.matchedKeyword || null,
       }),
     });
   } catch (e) { /* 오프라인이면 무시. 다음 앱 실행 시 syncAll로 재전송 */ }
+}
+
+async function deleteFromSupabase(id) {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/payments?id=eq.${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+    });
+  } catch (e) { /* 무시 */ }
 }
 
 export async function syncAll() {

@@ -11,7 +11,7 @@
     },
     "android": {
       "package": "com.eunsung.cleanpay",
-      "versionCode": 1,
+      "versionCode": 2,
       "allowBackup": false,
       "adaptiveIcon": {
         "backgroundColor": "#0f1115"
@@ -22,6 +22,13 @@
         "projectId": "2d76d3fb-fd55-4f2e-b42d-8fc6ac7ef5ef"
       }
     },
-    "owner": "kesjjang4545s-team"
+    "owner": "kesjjang4545s-team",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/2d76d3fb-fd55-4f2e-b42d-8fc6ac7ef5ef"
+    },
+    "ios": {}
   }
 }

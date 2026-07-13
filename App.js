@@ -1,36 +1,57 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   SafeAreaView, View, Text, TouchableOpacity, ScrollView, StyleSheet,
   Alert, Modal, TextInput, AppState, RefreshControl,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import RNAndroidNotificationListener from 'react-native-android-notification-listener';
-import { getPayments, getStreak, updateMemo, savePayment, syncAll, getQuitStart } from './src/store';
-import { parsePayment, classify } from './src/parser';
-import { SUPABASE_URL } from './src/config';
+import { getPayments, savePayment, updateCategory, deletePayment, syncAll } from './src/store';
+import { parsePayment } from './src/parser';
+import { QUIT_GOALS, CATEGORIES, SUPABASE_URL } from './src/config';
 
-const C = { bg:'#0f1115', card:'#1a1e26', line:'#2a3040', text:'#eef1f6', sub:'#8b93a5', green:'#4fc08d', red:'#e2604f', gold:'#e8b84f' };
-const fmtWon = n => n.toLocaleString('ko-KR') + '원';
-const fmtDT = iso => { const d = new Date(iso); return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; };
+const C = {
+  bg:'#0F1115', card:'#161A21', card2:'#1E242E', line:'#272E39',
+  text:'#E9EDF2', sub:'#8C96A4', faint:'#5C6674',
+  mint:'#57D9A3', sky:'#6FB4F0', gold:'#E5B84B',
+};
+const CAT = Object.fromEntries(CATEGORIES.map(c => [c.key, c]));
+const won = n => n.toLocaleString('ko-KR');
+const DAY_NAMES = ['일','월','화','수','목','금','토'];
+
+function dayLabel(d) {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const that = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diff = Math.round((today - that) / 86400000);
+  const base = `${d.getMonth()+1}월 ${d.getDate()}일`;
+  if (diff === 0) return `${base} · 오늘`;
+  if (diff === 1) return `${base} · 어제`;
+  return `${base} · ${DAY_NAMES[d.getDay()]}요일`;
+}
+const hhmm = iso => { const d = new Date(iso); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; };
+const srcName = app => !app || app === 'manual' ? '직접 입력' : app === 'test' ? '테스트'
+  : /messaging/.test(app) ? '문자' : '카드 알림';
 
 export default function App() {
   const [perm, setPerm] = useState('unknown');
   const [payments, setPayments] = useState([]);
-  const [streak, setStreak] = useState(0);
-  const [memoTarget, setMemoTarget] = useState(null);
-  const [memoText, setMemoText] = useState('');
   const [refreshing, setRefreshing] = useState(false);
+  const [monthOffset, setMonthOffset] = useState(0); // 0=이번달, -1=지난달 ...
+  const [pickTarget, setPickTarget] = useState(null); // 카테고리 바꿀 결제
+  const [adding, setAdding] = useState(false);        // 직접 추가 모달
+  const [addName, setAddName] = useState('');
+  const [addAmt, setAddAmt] = useState('');
+  const [addCat, setAddCat] = useState('food');
 
   const load = useCallback(async () => {
-    const [p, s, st] = await Promise.all([
-      getPayments(), getStreak(), RNAndroidNotificationListener.getPermissionStatus(),
+    const [p, st] = await Promise.all([
+      getPayments(), RNAndroidNotificationListener.getPermissionStatus(),
     ]);
-    setPayments(p); setStreak(s); setPerm(st);
+    setPayments(p); setPerm(st);
   }, []);
 
   useEffect(() => {
     load();
-    getQuitStart();
     syncAll();
     const sub = AppState.addEventListener('change', st => { if (st === 'active') load(); });
     const t = setInterval(load, 20000);
@@ -41,25 +62,84 @@ export default function App() {
     setRefreshing(true); await load(); setRefreshing(false);
   }, [load]);
 
-  const saveMemo = useCallback(async () => {
-    const next = await updateMemo(memoTarget.id, memoText.trim());
-    setPayments(next); setMemoTarget(null); setMemoText('');
-  }, [memoTarget, memoText]);
+  // ── 이번 달 데이터 ──
+  const now = new Date();
+  const viewYM = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+  const monthPays = useMemo(() => payments.filter(p => {
+    const d = new Date(p.ts);
+    return d.getFullYear() === viewYM.getFullYear() && d.getMonth() === viewYM.getMonth();
+  }), [payments, monthOffset]);
+  const total = monthPays.reduce((s, p) => s + p.amount, 0);
+
+  // 지난달 같은 기간(1일~오늘 일자) 대비
+  const delta = useMemo(() => {
+    if (monthOffset !== 0) return null;
+    const prevYM = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const prevSame = payments.filter(p => {
+      const d = new Date(p.ts);
+      return d.getFullYear() === prevYM.getFullYear() && d.getMonth() === prevYM.getMonth()
+        && d.getDate() <= now.getDate();
+    }).reduce((s, p) => s + p.amount, 0);
+    if (prevSame === 0) return null;
+    return total - prevSame;
+  }, [payments, monthOffset, total]);
+
+  // 카테고리별 합계 (금액 큰 순)
+  const catRows = useMemo(() => {
+    const sums = {};
+    monthPays.forEach(p => { const k = CAT[p.category] ? p.category : 'etc'; sums[k] = (sums[k]||0) + p.amount; });
+    return Object.entries(sums).sort((a,b) => b[1]-a[1]);
+  }, [monthPays]);
+  const maxCat = catRows.length ? catRows[0][1] : 1;
+
+  // 날짜별 그룹
+  const groups = useMemo(() => {
+    const g = [];
+    monthPays.forEach(p => {
+      const label = dayLabel(new Date(p.ts));
+      let grp = g.find(x => x.label === label);
+      if (!grp) { grp = { label, items: [] }; g.push(grp); }
+      grp.items.push(p);
+    });
+    return g;
+  }, [monthPays]);
+
+  // ── 액션 ──
+  const pickCategory = useCallback(async (catKey) => {
+    const next = await updateCategory(pickTarget.id, catKey);
+    setPayments([...next]); setPickTarget(null);
+  }, [pickTarget]);
+
+  const addManual = useCallback(async () => {
+    const amount = parseInt(addAmt.replace(/[^\d]/g, ''), 10);
+    if (!addName.trim() || !amount) { Alert.alert('입력 확인', '이름과 금액을 입력해주세요.'); return; }
+    const next = await savePayment({
+      id: `m_${Date.now()}`, ts: new Date().toISOString(),
+      merchant: addName.trim(), amount, category: addCat, app: 'manual',
+    });
+    setPayments(next); setAdding(false); setAddName(''); setAddAmt('');
+  }, [addName, addAmt, addCat]);
+
+  const confirmDelete = useCallback((p) => {
+    Alert.alert('삭제할까요?', `${p.merchant} · ${won(p.amount)}원`, [
+      { text: '취소', style: 'cancel' },
+      { text: '삭제', style: 'destructive', onPress: async () => setPayments(await deletePayment(p.id)) },
+    ]);
+  }, []);
 
   // 테스트: 가짜 결제 알림 흘려보기
-  const testNotif = useCallback(async (risky) => {
-    const text = risky
-      ? '신한카드승인 김*성 45,000원 일시불 07/13 21:30 왕십리민속포차'
-      : '신한카드승인 김*성 5,500원 일시불 07/13 12:10 스타벅스강남점';
-    const record = classify(parsePayment(text));
-    const next = await savePayment({ ...record, id:`test_${Date.now()}`, ts:new Date().toISOString(), app:'test' });
-    setPayments(next); load();
-  }, [load]);
+  const testNotif = useCallback(async () => {
+    const samples = [
+      '신한카드승인 김*성 5,500원 일시불 07/13 12:10 스타벅스강남점',
+      'KB국민카드 승인 김*성 9,500원 일시불 김밥천국역삼점',
+      '신한카드승인 김*성 13,200원 일시불 카카오T',
+    ];
+    const parsed = parsePayment(samples[Math.floor(Math.random()*samples.length)]);
+    const next = await savePayment({ ...parsed, id:`test_${Date.now()}`, ts:new Date().toISOString(), app:'test' });
+    setPayments(next);
+  }, []);
 
-  const today = new Date().toDateString();
-  const todayList = payments.filter(p => new Date(p.ts).toDateString() === today);
-  const todayClean = todayList.length > 0 && todayList.every(p => p.status === '클린');
-  const fails = payments.filter(p => p.status === '실패').length;
+  const monthTitle = `${viewYM.getFullYear()}년 ${viewYM.getMonth()+1}월`;
 
   return (
     <SafeAreaView style={s.root}>
@@ -67,8 +147,10 @@ export default function App() {
       <ScrollView contentContainerStyle={s.scroll}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.sub} />}>
 
-        <Text style={s.appTitle}>💳 클린페이</Text>
-        <Text style={s.appSub}>결제 내역으로 증명하는 금주</Text>
+        <View style={s.topRow}>
+          <Text style={s.appTitle}>클린<Text style={{color:C.mint}}>페이</Text></Text>
+          <Text style={s.appSub}>은성의 가계부</Text>
+        </View>
 
         {/* 권한 배너 */}
         {perm !== 'authorized' && (
@@ -78,76 +160,148 @@ export default function App() {
           </TouchableOpacity>
         )}
 
-        {/* 스트릭 */}
-        <View style={s.streakCard}>
-          <Text style={s.streakLabel}>연속 클린</Text>
-          <Text style={s.streakDays}>{streak}일</Text>
-          <Text style={[s.todayBadge, { color: todayList.length === 0 ? C.sub : todayClean ? C.green : C.red }]}>
-            {todayList.length === 0 ? '오늘 결제 없음' : todayClean ? `오늘 ${todayList.length}건 모두 클린 ✓` : '오늘 위험 결제 감지됨'}
-          </Text>
+        {/* D-day 카드 */}
+        <View style={s.ddayRow}>
+          {QUIT_GOALS.map((g, i) => {
+            const days = Math.floor((Date.now() - new Date(g.start).getTime()) / 86400000);
+            const color = i === 0 ? C.mint : C.sky;
+            const st = new Date(g.start);
+            return (
+              <View key={g.key} style={[s.dday, { backgroundColor: i === 0 ? '#122920' : '#12222E' }]}>
+                <Text style={s.ddayTag}>{g.label}</Text>
+                <Text style={[s.ddayNum, { color }]}>D+{days}</Text>
+                <Text style={s.ddaySince}>{st.getMonth()+1}월 {st.getDate()}일부터</Text>
+              </View>
+            );
+          })}
         </View>
 
-        <View style={s.statRow}>
-          <View style={s.stat}><Text style={s.statL}>전체 기록</Text><Text style={s.statV}>{payments.length}건</Text></View>
-          <View style={s.stat}><Text style={s.statL}>실패</Text><Text style={[s.statV, { color: fails ? C.red : C.green }]}>{fails}건</Text></View>
-        </View>
+        {/* 월 요약 */}
+        <View style={s.month}>
+          <View style={s.monthHead}>
+            <TouchableOpacity onPress={() => setMonthOffset(o => o-1)} style={s.navBtn}><Text style={s.navT}>◀</Text></TouchableOpacity>
+            <Text style={s.monthTitle}>{monthTitle}</Text>
+            <TouchableOpacity onPress={() => setMonthOffset(o => Math.min(0, o+1))} style={s.navBtn}>
+              <Text style={[s.navT, monthOffset === 0 && { opacity: 0.25 }]}>▶</Text>
+            </TouchableOpacity>
+          </View>
+          <Text style={s.total}>{won(total)}<Text style={s.totalUnit}> 원</Text></Text>
+          {delta !== null && (
+            <Text style={s.delta}>지난달 같은 기간보다{' '}
+              <Text style={{ color: delta <= 0 ? C.mint : '#F2917A', fontWeight: '700' }}>
+                {delta <= 0 ? '-' : '+'}{won(Math.abs(delta))}원 {delta <= 0 ? '덜' : '더'} 썼어요
+              </Text>
+            </Text>
+          )}
 
-        {/* 여자친구 공유 링크 안내 */}
-        <View style={s.card}>
-          <Text style={s.cardTitle}>💌 여자친구 조회 페이지</Text>
-          <Text style={s.cardText}>
-            {SUPABASE_URL
-              ? 'Supabase 연동됨. status.html을 호스팅한 링크를 여자친구에게 보내주세요.'
-              : 'src/config.js에 Supabase 주소를 넣으면 여자친구가 웹 링크로 실시간 조회할 수 있어요. (README 참고)'}
-          </Text>
+          {/* 카테고리 바 */}
+          <View style={{ marginTop: 14, gap: 9 }}>
+            {catRows.map(([k, v]) => (
+              <View key={k} style={s.catRow}>
+                <Text style={s.catName}>{CAT[k].label}</Text>
+                <View style={s.catBar}>
+                  <View style={[s.catFill, { width: `${Math.max(6, v/maxCat*100)}%`, backgroundColor: CAT[k].color }]} />
+                </View>
+                <Text style={s.catAmt}>{won(v)}원</Text>
+              </View>
+            ))}
+            {catRows.length === 0 && <Text style={s.emptySmall}>이 달에는 기록이 없어요</Text>}
+          </View>
         </View>
 
         {/* 내역 */}
-        <Text style={s.secTitle}>결제 내역</Text>
-        {payments.length === 0 && (
-          <Text style={s.empty}>아직 감지된 결제가 없어요.{'\n'}권한을 켜고 카드 결제가 발생하면 자동으로 쌓입니다.{'\n'}아래 테스트 버튼으로 미리 볼 수 있어요.</Text>
-        )}
-        {payments.slice(0, 50).map(p => (
-          <TouchableOpacity key={p.id} style={s.payCard}
-            onPress={() => { if (p.status === '실패') { setMemoTarget(p); setMemoText(p.memo || ''); } }}>
-            <View style={s.payHead}>
-              <Text style={s.payMerchant}>{p.merchant}</Text>
-              <Text style={[s.payStatus, { color: p.status === '클린' ? C.green : C.red }]}>
-                {p.status === '클린' ? '클린 ✓' : `실패 (${p.matchedKeyword})`}
-              </Text>
+        {groups.map(g => (
+          <View key={g.label}>
+            <View style={s.dayLabel}>
+              <Text style={s.dayLabelT}>{g.label}</Text>
+              <Text style={s.dayLabelT}>{won(g.items.reduce((s2,x)=>s2+x.amount,0))}원</Text>
             </View>
-            <Text style={s.payMeta}>{fmtDT(p.ts)} · {fmtWon(p.amount)}</Text>
-            {p.status === '실패' && (
-              <Text style={s.payMemo}>{p.memo ? `📝 ${p.memo}` : '탭해서 메모 남기기 (어떤 상황이었는지)'}</Text>
-            )}
-          </TouchableOpacity>
+            {g.items.map(p => {
+              const cat = CAT[p.category] || CAT.etc;
+              return (
+                <TouchableOpacity key={p.id} style={s.item}
+                  onPress={() => setPickTarget(p)} onLongPress={() => confirmDelete(p)} delayLongPress={450}>
+                  <View style={[s.dot, { backgroundColor: cat.color }]}><Text style={s.dotT}>{cat.label[0]}</Text></View>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={s.itemName} numberOfLines={1}>{p.merchant}</Text>
+                    <Text style={s.itemSub}>{hhmm(p.ts)} · {srcName(p.app)}</Text>
+                  </View>
+                  <View style={{ alignItems: 'flex-end' }}>
+                    <Text style={s.itemAmt}>{won(p.amount)}원</Text>
+                    <View style={s.chip}>
+                      <View style={[s.chipDot, { backgroundColor: cat.color }]} />
+                      <Text style={s.chipT}>{cat.label} ▾</Text>
+                    </View>
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
         ))}
+        {monthPays.length === 0 && (
+          <Text style={s.empty}>아직 이 달 기록이 없어요.{'\n'}카드 결제 알림이 오면 자동으로 쌓이고,{'\n'}현금은 아래 + 버튼으로 직접 추가할 수 있어요.</Text>
+        )}
 
-        {/* 테스트 */}
-        <Text style={s.secTitle}>동작 테스트</Text>
-        <View style={s.statRow}>
-          <TouchableOpacity style={[s.testBtn, { borderColor: '#2f5a42' }]} onPress={() => testNotif(false)}>
-            <Text style={{ color: C.green, fontWeight: '700' }}>클린 결제 시뮬</Text>
+        {/* 도움말/테스트 */}
+        <View style={{ marginTop: 18 }}>
+          <TouchableOpacity style={s.testBtn} onPress={testNotif}>
+            <Text style={{ color: C.sub, fontWeight: '700', fontSize: 12 }}>동작 테스트 (가짜 결제 1건 추가)</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={[s.testBtn, { borderColor: '#5a3d4a' }]} onPress={() => testNotif(true)}>
-            <Text style={{ color: C.red, fontWeight: '700' }}>포차 결제 시뮬</Text>
-          </TouchableOpacity>
+          <Text style={s.hint}>내역을 누르면 카테고리 변경 · 길게 누르면 삭제{'\n'}⚙️ 설정 → 배터리 → 클린페이 → "제한 없음" 권장</Text>
+          {!SUPABASE_URL && (
+            <Text style={s.hint}>src/config.js에 Supabase 주소를 넣으면 여자친구가 웹으로 조회할 수 있어요</Text>
+          )}
         </View>
-        <Text style={s.hint}>⚙️ 설정 → 배터리 → 클린페이 → "제한 없음"으로 해두면 백그라운드 감지가 안정적입니다</Text>
       </ScrollView>
 
-      {/* 실패 메모 모달 */}
-      <Modal visible={!!memoTarget} transparent animationType="slide" onRequestClose={() => setMemoTarget(null)}>
-        <View style={s.modalBg}>
-          <View style={s.modalCard}>
-            <Text style={s.modalTitle}>실패 메모</Text>
-            <Text style={s.cardText}>{memoTarget?.merchant} · {memoTarget ? fmtWon(memoTarget.amount) : ''}</Text>
-            <TextInput style={s.input} multiline placeholder="예: 거래처 회식이라 어쩔 수 없었음. 1차만 하고 나옴."
-              placeholderTextColor={C.sub} value={memoText} onChangeText={setMemoText} />
-            <TouchableOpacity style={s.bigBtn} onPress={saveMemo}><Text style={s.bigBtnT}>저장</Text></TouchableOpacity>
-            <TouchableOpacity onPress={() => setMemoTarget(null)}><Text style={s.cancel}>닫기</Text></TouchableOpacity>
+      {/* + 직접 추가 버튼 */}
+      <TouchableOpacity style={s.fab} onPress={() => { setAddCat('food'); setAdding(true); }}>
+        <Text style={s.fabT}>＋</Text>
+      </TouchableOpacity>
+
+      {/* 카테고리 선택 모달 */}
+      <Modal visible={!!pickTarget} transparent animationType="slide" onRequestClose={() => setPickTarget(null)}>
+        <TouchableOpacity style={s.modalBg} activeOpacity={1} onPress={() => setPickTarget(null)}>
+          <View style={s.modalCard} onStartShouldSetResponder={() => true}>
+            <Text style={s.modalTitle}>카테고리 선택</Text>
+            <Text style={s.modalSub}>"{pickTarget?.merchant}" — 앞으로 이 가맹점은 선택한 카테고리로 기억해요</Text>
+            <View style={s.catGrid}>
+              {CATEGORIES.map(c => (
+                <TouchableOpacity key={c.key}
+                  style={[s.catBtn, pickTarget?.category === c.key && { borderColor: C.mint }]}
+                  onPress={() => pickCategory(c.key)}>
+                  <View style={[s.catBtnDot, { backgroundColor: c.color }]} />
+                  <Text style={s.catBtnT}>{c.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
           </View>
-        </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* 직접 추가 모달 */}
+      <Modal visible={adding} transparent animationType="slide" onRequestClose={() => setAdding(false)}>
+        <TouchableOpacity style={s.modalBg} activeOpacity={1} onPress={() => setAdding(false)}>
+          <View style={s.modalCard} onStartShouldSetResponder={() => true}>
+            <Text style={s.modalTitle}>지출 직접 추가</Text>
+            <Text style={s.modalSub}>현금이나 계좌이체로 쓴 돈을 기록해요</Text>
+            <View style={s.catGrid}>
+              {CATEGORIES.map(c => (
+                <TouchableOpacity key={c.key}
+                  style={[s.catBtn, addCat === c.key && { borderColor: C.mint }]}
+                  onPress={() => setAddCat(c.key)}>
+                  <View style={[s.catBtnDot, { backgroundColor: c.color }]} />
+                  <Text style={[s.catBtnT, addCat === c.key && { color: C.text }]}>{c.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <TextInput style={s.input} placeholder="어디서 썼나요? (예: 김밥천국)" placeholderTextColor={C.faint}
+              value={addName} onChangeText={setAddName} />
+            <TextInput style={s.input} placeholder="금액 (원)" placeholderTextColor={C.faint}
+              keyboardType="number-pad" value={addAmt} onChangeText={setAddAmt} />
+            <TouchableOpacity style={s.bigBtn} onPress={addManual}><Text style={s.bigBtnT}>추가하기</Text></TouchableOpacity>
+          </View>
+        </TouchableOpacity>
       </Modal>
     </SafeAreaView>
   );
@@ -155,37 +309,64 @@ export default function App() {
 
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
-  scroll: { padding: 16, paddingBottom: 60 },
-  appTitle: { color: C.text, fontSize: 24, fontWeight: '900', marginTop: 8 },
-  appSub: { color: C.sub, fontSize: 13, marginBottom: 16 },
-  permBanner: { backgroundColor: '#3a2f1c', borderColor: '#6b5626', borderWidth: 1, borderRadius: 14, padding: 14, marginBottom: 14 },
+  scroll: { padding: 16, paddingBottom: 110 },
+  topRow: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', marginTop: 8, marginBottom: 10 },
+  appTitle: { color: C.text, fontSize: 20, fontWeight: '900' },
+  appSub: { color: C.faint, fontSize: 12 },
+  permBanner: { backgroundColor: '#3a2f1c', borderColor: '#6b5626', borderWidth: 1, borderRadius: 14, padding: 14, marginBottom: 12 },
   permTitle: { color: C.gold, fontWeight: '800', fontSize: 15 },
   permSub: { color: '#cdb97e', fontSize: 12, marginTop: 4, lineHeight: 18 },
-  streakCard: { backgroundColor: C.card, borderWidth: 1, borderColor: C.line, borderRadius: 20, padding: 24, alignItems: 'center', marginBottom: 12 },
-  streakLabel: { color: C.sub, fontSize: 14, letterSpacing: 3 },
-  streakDays: { color: C.text, fontSize: 56, fontWeight: '900', marginVertical: 2 },
-  todayBadge: { fontSize: 14, fontWeight: '700', marginTop: 6 },
-  statRow: { flexDirection: 'row', gap: 10, marginBottom: 12 },
-  stat: { flex: 1, backgroundColor: C.card, borderWidth: 1, borderColor: C.line, borderRadius: 14, padding: 14, alignItems: 'center' },
-  statL: { color: C.sub, fontSize: 12 }, statV: { color: C.text, fontSize: 18, fontWeight: '800', marginTop: 2 },
-  card: { backgroundColor: C.card, borderWidth: 1, borderColor: C.line, borderRadius: 14, padding: 14, marginBottom: 12 },
-  cardTitle: { color: C.text, fontSize: 14, fontWeight: '800', marginBottom: 4 },
-  cardText: { color: C.sub, fontSize: 12, lineHeight: 18 },
-  secTitle: { color: C.text, fontSize: 16, fontWeight: '800', marginVertical: 10 },
-  empty: { color: C.sub, fontSize: 13, lineHeight: 20, textAlign: 'center', marginVertical: 20 },
-  payCard: { backgroundColor: C.card, borderWidth: 1, borderColor: C.line, borderRadius: 14, padding: 14, marginBottom: 8 },
-  payHead: { flexDirection: 'row', justifyContent: 'space-between' },
-  payMerchant: { color: C.text, fontSize: 15, fontWeight: '700', flex: 1, marginRight: 8 },
-  payStatus: { fontSize: 13, fontWeight: '800' },
-  payMeta: { color: C.sub, fontSize: 12, marginTop: 3 },
-  payMemo: { color: C.gold, fontSize: 12, marginTop: 6 },
-  testBtn: { flex: 1, backgroundColor: C.card, borderWidth: 1, borderRadius: 12, padding: 12, alignItems: 'center' },
-  hint: { color: C.sub, fontSize: 11, lineHeight: 16, marginTop: 10, textAlign: 'center' },
-  modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
-  modalCard: { backgroundColor: C.bg, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 22, paddingBottom: 36 },
-  modalTitle: { color: C.text, fontSize: 18, fontWeight: '800', marginBottom: 6 },
-  input: { backgroundColor: C.card, borderWidth: 1, borderColor: C.line, borderRadius: 12, color: C.text, padding: 12, height: 90, textAlignVertical: 'top', marginTop: 10, fontSize: 15 },
-  bigBtn: { backgroundColor: C.green, borderRadius: 12, padding: 14, alignItems: 'center', marginTop: 12 },
-  bigBtnT: { color: C.bg, fontWeight: '800', fontSize: 16 },
-  cancel: { color: C.sub, textAlign: 'center', padding: 10 },
+
+  ddayRow: { flexDirection: 'row', gap: 10, marginBottom: 12 },
+  dday: { flex: 1, borderRadius: 16, borderWidth: 1, borderColor: C.line, padding: 14 },
+  ddayTag: { color: C.sub, fontSize: 11, fontWeight: '700', letterSpacing: 2 },
+  ddayNum: { fontSize: 26, fontWeight: '800', marginTop: 2 },
+  ddaySince: { color: C.faint, fontSize: 11, marginTop: 2 },
+
+  month: { backgroundColor: C.card, borderWidth: 1, borderColor: C.line, borderRadius: 16, padding: 16, marginBottom: 6 },
+  monthHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 14 },
+  navBtn: { padding: 4 },
+  navT: { color: C.faint, fontSize: 14 },
+  monthTitle: { color: C.sub, fontWeight: '700', fontSize: 14 },
+  total: { color: C.text, fontSize: 30, fontWeight: '800', marginTop: 6 },
+  totalUnit: { fontSize: 16, color: C.sub, fontWeight: '600' },
+  delta: { color: C.sub, fontSize: 12, marginTop: 2 },
+
+  catRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  catName: { color: C.sub, fontSize: 13, width: 64 },
+  catBar: { flex: 1, height: 8, borderRadius: 4, backgroundColor: C.card2, overflow: 'hidden' },
+  catFill: { height: '100%', borderRadius: 4 },
+  catAmt: { color: C.text, fontSize: 13, fontWeight: '600', width: 82, textAlign: 'right' },
+  emptySmall: { color: C.faint, fontSize: 12, textAlign: 'center', paddingVertical: 8 },
+
+  dayLabel: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 14, marginBottom: 8, paddingHorizontal: 4 },
+  dayLabelT: { color: C.faint, fontSize: 12, fontWeight: '700' },
+  item: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: C.card, borderWidth: 1, borderColor: C.line, borderRadius: 14, padding: 12, marginBottom: 8 },
+  dot: { width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  dotT: { color: '#10141A', fontWeight: '800', fontSize: 13 },
+  itemName: { color: C.text, fontWeight: '700', fontSize: 14.5 },
+  itemSub: { color: C.faint, fontSize: 11.5, marginTop: 1 },
+  itemAmt: { color: C.text, fontWeight: '700', fontSize: 14.5 },
+  chip: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: C.card2, borderRadius: 99, paddingHorizontal: 9, paddingVertical: 3, marginTop: 4 },
+  chipDot: { width: 7, height: 7, borderRadius: 99 },
+  chipT: { color: C.sub, fontSize: 11, fontWeight: '700' },
+
+  empty: { color: C.sub, fontSize: 13, lineHeight: 20, textAlign: 'center', marginVertical: 24 },
+  testBtn: { backgroundColor: C.card, borderWidth: 1, borderColor: C.line, borderRadius: 12, padding: 11, alignItems: 'center' },
+  hint: { color: C.faint, fontSize: 11, lineHeight: 17, marginTop: 10, textAlign: 'center' },
+
+  fab: { position: 'absolute', right: 18, bottom: 24, width: 54, height: 54, borderRadius: 27, backgroundColor: C.mint, alignItems: 'center', justifyContent: 'center', elevation: 6 },
+  fabT: { color: '#0B241A', fontSize: 26, fontWeight: '700', marginTop: -2 },
+
+  modalBg: { flex: 1, backgroundColor: 'rgba(4,6,9,0.6)', justifyContent: 'flex-end' },
+  modalCard: { backgroundColor: C.card2, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 20, paddingBottom: 34 },
+  modalTitle: { color: C.text, fontSize: 16, fontWeight: '800' },
+  modalSub: { color: C.sub, fontSize: 12, marginTop: 3, marginBottom: 14, lineHeight: 17 },
+  catGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  catBtn: { width: '23%', flexGrow: 1, backgroundColor: C.card, borderWidth: 1, borderColor: C.line, borderRadius: 14, paddingVertical: 12, alignItems: 'center' },
+  catBtnDot: { width: 12, height: 12, borderRadius: 99, marginBottom: 6 },
+  catBtnT: { color: C.sub, fontSize: 12, fontWeight: '700' },
+  input: { backgroundColor: C.card, borderWidth: 1, borderColor: C.line, borderRadius: 12, color: C.text, padding: 12, marginTop: 10, fontSize: 15 },
+  bigBtn: { backgroundColor: C.mint, borderRadius: 12, padding: 14, alignItems: 'center', marginTop: 12 },
+  bigBtnT: { color: '#0B241A', fontWeight: '800', fontSize: 16 },
 });

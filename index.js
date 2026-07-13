@@ -3,7 +3,7 @@ import { registerRootComponent } from 'expo';
 import { RNAndroidNotificationListenerHeadlessJsName } from 'react-native-android-notification-listener';
 import App from './App';
 import { BANK_PACKAGES } from './src/config';
-import { parsePayment, classify } from './src/parser';
+import { parsePayment } from './src/parser';
 import { savePayment } from './src/store';
 
 /**
@@ -26,12 +26,9 @@ const headlessNotificationListener = async ({ notification }) => {
     const parsed = parsePayment(fullText);
     if (!parsed) return;
 
-    // 4) 위험 키워드 판별 → 클린/실패 분류
-    const record = classify(parsed);
-
-    // 5) 저장 + Supabase 동기화
+    // 4) 저장 (카테고리는 savePayment 안에서 자동 추측) + Supabase 동기화
     await savePayment({
-      ...record,
+      ...parsed,
       id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       ts: new Date().toISOString(),
       app: n.app,
