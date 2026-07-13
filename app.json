@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": "클린페이",
+    "slug": "cleanpay",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0f1115",
+    "splash": { "backgroundColor": "#0f1115" },
+    "android": {
+      "package": "com.eunsung.cleanpay",
+      "versionCode": 1,
+      "adaptiveIcon": { "backgroundColor": "#0f1115" }
+    }
+  }
+}

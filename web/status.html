@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>은성이 클린 리포트 💚</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0f1115; color:#eef1f6; font-family:-apple-system,'Noto Sans KR',sans-serif; min-height:100vh; }
+  .wrap { max-width:430px; margin:0 auto; padding:20px; }
+  .title { font-size:20px; font-weight:900; margin:10px 0 2px; }
+  .sub { color:#8b93a5; font-size:13px; }
+  .streak { background:#1a1e26; border:1px solid #2a3040; border-radius:20px; padding:28px; text-align:center; margin:18px 0 12px; }
+  .days { font-size:58px; font-weight:900; color:#4fc08d; }
+  .badge { font-size:14px; font-weight:700; margin-top:8px; }
+  .card { background:#1a1e26; border:1px solid #2a3040; border-radius:14px; padding:14px; margin-bottom:9px; }
+  .head { display:flex; justify-content:space-between; font-size:14px; font-weight:700; }
+  .meta { color:#8b93a5; font-size:12px; margin-top:3px; }
+  .memo { color:#e8b84f; font-size:12px; margin-top:6px; }
+  .green{color:#4fc08d} .red{color:#e2604f} .gray{color:#8b93a5}
+  .sec { font-size:15px; font-weight:800; margin:18px 0 10px; }
+  .empty { color:#8b93a5; text-align:center; padding:30px 0; font-size:13px; line-height:20px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="title">💚 은성이 클린 리포트</div>
+  <div class="sub" id="updated">불러오는 중...</div>
+  <div class="streak">
+    <div class="sub">연속 클린</div>
+    <div class="days" id="streak">-</div>
+    <div class="badge" id="todayBadge"></div>
+  </div>
+  <div class="sec">오늘 결제 내역</div>
+  <div id="todayList"><div class="empty">불러오는 중...</div></div>
+  <div class="sec">최근 7일</div>
+  <div id="weekList"></div>
+</div>
+<script>
+// ▼▼▼ 여기 두 줄만 채우면 됩니다 (앱의 config.js와 동일한 값) ▼▼▼
+const SUPABASE_URL = '';
+const SUPABASE_ANON_KEY = '';
+// ▲▲▲
+
+const won = n => Number(n).toLocaleString('ko-KR')+'원';
+const fdt = iso => { const d=new Date(iso); return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; };
+
+async function load(){
+  if(!SUPABASE_URL){ document.getElementById('updated').textContent='설정이 필요합니다 (SUPABASE_URL)'; return; }
+  const since = new Date(Date.now()-7*86400000).toISOString();
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/payments?ts=gte.${since}&order=ts.desc&select=*`, {
+    headers:{ apikey:SUPABASE_ANON_KEY, Authorization:`Bearer ${SUPABASE_ANON_KEY}` }
+  });
+  const rows = await res.json();
+  document.getElementById('updated').textContent = '업데이트: ' + new Date().toLocaleString('ko-KR');
+
+  // 스트릭: 최근 실패 찾기 (7일 넘게 실패 없으면 별도 조회)
+  let lastFail = rows.find(r=>r.status==='실패');
+  if(!lastFail){
+    const rf = await fetch(`${SUPABASE_URL}/rest/v1/payments?status=eq.실패&order=ts.desc&limit=1&select=ts`, {
+      headers:{ apikey:SUPABASE_ANON_KEY, Authorization:`Bearer ${SUPABASE_ANON_KEY}` }});
+    const fr = await rf.json(); lastFail = fr[0];
+  }
+  // 실패가 아예 없으면 가장 오래된 기록부터 계산
+  let fromTs;
+  if (lastFail) fromTs = new Date(lastFail.ts);
+  else {
+    const ro = await fetch(`${SUPABASE_URL}/rest/v1/payments?order=ts.asc&limit=1&select=ts`, {
+      headers:{ apikey:SUPABASE_ANON_KEY, Authorization:`Bearer ${SUPABASE_ANON_KEY}` }});
+    const or_ = await ro.json(); fromTs = or_[0] ? new Date(or_[0].ts) : new Date();
+  }
+  document.getElementById('streak').textContent = Math.floor((Date.now()-fromTs)/86400000)+'일';
+
+  const today = new Date().toDateString();
+  const todayRows = rows.filter(r=>new Date(r.ts).toDateString()===today);
+  const clean = todayRows.length>0 && todayRows.every(r=>r.status==='클린');
+  const tb = document.getElementById('todayBadge');
+  if(todayRows.length===0){ tb.textContent='오늘 결제 없음'; tb.className='badge gray'; }
+  else if(clean){ tb.textContent=`오늘 ${todayRows.length}건 모두 클린 ✓`; tb.className='badge green'; }
+  else { tb.textContent='오늘 위험 결제가 있어요'; tb.className='badge red'; }
+
+  const card = r => `<div class="card"><div class="head"><span>${r.merchant}</span>
+    <span class="${r.status==='클린'?'green':'red'}">${r.status==='클린'?'클린 ✓':'실패'}</span></div>
+    <div class="meta">${fdt(r.ts)} · ${won(r.amount)}</div>
+    ${r.memo?`<div class="memo">📝 ${r.memo}</div>`:''}</div>`;
+
+  document.getElementById('todayList').innerHTML = todayRows.length? todayRows.map(card).join('') : '<div class="empty">오늘은 아직 결제가 없어요</div>';
+  document.getElementById('weekList').innerHTML = rows.filter(r=>new Date(r.ts).toDateString()!==today).map(card).join('') || '<div class="empty">기록 없음</div>';
+}
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>
