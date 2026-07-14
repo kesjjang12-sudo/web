@@ -5,26 +5,41 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>가계부</title>
 <style>
-  * { margin:0; padding:0; box-sizing:border-box; }
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   body { background:#101013; color:#E5E8EB; font-family:-apple-system,'Noto Sans KR',sans-serif; min-height:100vh; }
   .wrap { max-width:430px; margin:0 auto; padding:22px 20px 48px; }
   .title { font-size:21px; font-weight:800; letter-spacing:-.02em; margin:8px 0 2px; }
+  .title em { font-style:normal; color:#3182F6; }
   .sub { color:#6B7684; font-size:12px; }
+
   .ddays { display:flex; gap:12px; margin:18px 0 12px; }
   .dday { flex:1; background:#17171C; border-radius:20px; padding:18px; }
   .dday .tag { font-size:13px; color:#8B95A1; font-weight:600; }
   .dday .num { font-size:26px; font-weight:800; margin-top:4px; letter-spacing:-.02em; }
   .dday .since { font-size:12px; color:#6B7684; margin-top:3px; }
   .dday.sober .num{ color:#16C47F; } .dday.smoke .num{ color:#4E9BFA; }
+
   .month { background:#17171C; border-radius:20px; padding:20px; margin-bottom:12px; }
+  .mnav { display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
+  .mnav button { all:unset; cursor:pointer; color:#6B7684; font-size:22px; font-weight:600; padding:0 8px; }
+  .mnav button:disabled { opacity:.25; cursor:default; }
+  .mnav .mt { color:#8B95A1; font-weight:600; font-size:14px; }
   .mtitle { color:#8B95A1; font-size:14px; }
   .total { font-size:34px; font-weight:800; margin-top:2px; letter-spacing:-.03em; }
-  .cats { margin-top:18px; display:grid; gap:11px; }
-  .cat-row { display:grid; grid-template-columns:66px 1fr 86px; align-items:center; gap:12px; font-size:14px; }
+  .delta { display:none; margin-top:10px; background:#26262C; border-radius:10px; padding:5px 10px; font-size:13px; font-weight:700; width:fit-content; }
+  .cats { margin-top:18px; display:grid; gap:12px; }
+  .cat-row { display:grid; grid-template-columns:66px 1fr 90px; align-items:center; gap:12px; font-size:14px; }
   .cat-row .name { color:#8B95A1; }
   .cat-row .bar { height:7px; border-radius:4px; background:#26262C; overflow:hidden; }
   .cat-row .bar i { display:block; height:100%; border-radius:4px; }
-  .cat-row .amt { text-align:right; font-weight:600; }
+  .cat-col { text-align:right; }
+  .cat-col .amt { font-weight:600; }
+  .cat-col .cd { font-size:10.5px; font-weight:700; margin-top:1px; }
+
+  .tabs { display:flex; background:#17171C; border-radius:14px; padding:4px; margin-bottom:12px; }
+  .tab { all:unset; cursor:pointer; flex:1; padding:9px 0; border-radius:11px; text-align:center; color:#6B7684; font-size:13.5px; font-weight:700; }
+  .tab.on { background:#26262C; color:#E5E8EB; }
+
   .day-card { background:#17171C; border-radius:20px; padding:8px 18px; margin-bottom:12px; }
   .day-head { display:flex; justify-content:space-between; padding:12px 0; color:#6B7684; font-size:13px; font-weight:600; }
   .item { display:flex; align-items:center; gap:14px; padding:11px 0; }
@@ -33,14 +48,40 @@
   .mid { flex:1; min-width:0; }
   .m-name { font-weight:700; font-size:15.5px; letter-spacing:-.02em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .m-sub { font-size:12.5px; color:#6B7684; margin-top:2px; }
-  .m-amt { font-weight:700; font-size:15.5px; letter-spacing:-.02em; }
   .m-memo { font-size:12.5px; color:#E5B84B; margin-top:3px; line-height:1.35; }
+  .m-amt { font-weight:700; font-size:15.5px; letter-spacing:-.02em; }
   .empty { color:#8B95A1; text-align:center; padding:34px 0; font-size:14px; line-height:22px; }
+
+  /* 달력 */
+  .cal { background:#17171C; border-radius:20px; padding:14px 10px 10px; margin-bottom:12px; display:none; }
+  .cal-head { display:grid; grid-template-columns:repeat(7,1fr); margin-bottom:6px; }
+  .cal-head span { text-align:center; color:#6B7684; font-size:12px; font-weight:600; }
+  .cal-head span:first-child { color:#C96A6A; } .cal-head span:last-child { color:#6A8FC9; }
+  .cal-grid { display:grid; grid-template-columns:repeat(7,1fr); }
+  .cal-cell { all:unset; cursor:pointer; display:flex; flex-direction:column; align-items:center; padding:7px 0; border-radius:12px; }
+  .cal-cell:disabled { cursor:default; }
+  .cal-cell .dn { width:26px; height:26px; border-radius:13px; display:grid; place-items:center; color:#E5E8EB; font-size:13.5px; font-weight:600; }
+  .cal-cell.future .dn { color:#3A3A42; }
+  .cal-cell.today .dn { background:#3182F6; color:#fff; }
+  .cal-cell .da { color:#8B95A1; font-size:9.5px; font-weight:600; margin-top:1px; min-height:12px; }
+  .cal-hint { color:#6B7684; font-size:11.5px; text-align:center; margin:8px 0 4px; }
+
+  /* 일자 상세 시트 */
+  .scrim { position:fixed; inset:0; background:rgba(0,0,0,.65); opacity:0; pointer-events:none; transition:opacity .2s; z-index:4; }
+  .sheet { position:fixed; left:50%; transform:translate(-50%,105%); bottom:0; width:100%; max-width:430px;
+    background:#17171C; border-radius:24px 24px 0 0; padding:20px 20px 32px; transition:transform .25s ease; z-index:5; }
+  body.open .scrim { opacity:1; pointer-events:auto; }
+  body.open .sheet { transform:translate(-50%,0); }
+  .grabber { width:40px; height:4px; border-radius:2px; background:#26262C; margin:0 auto 14px; }
+  .sheet h3 { font-size:19px; font-weight:800; letter-spacing:-.02em; }
+  .sheet .st { font-size:28px; font-weight:800; letter-spacing:-.03em; margin:2px 0 10px; }
+  .sheet .list { max-height:50vh; overflow-y:auto; }
+  @media (prefers-reduced-motion:reduce){ *{transition:none !important} }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <div class="title">클린페이 · 가계부</div>
+  <div class="title">클린<em>페이</em> · 가계부</div>
   <div class="sub" id="updated">불러오는 중...</div>
 
   <div class="ddays">
@@ -49,13 +90,39 @@
   </div>
 
   <div class="month">
+    <div class="mnav">
+      <button id="prevM" aria-label="이전 달">‹</button>
+      <span class="mt" id="mnavT">-</span>
+      <button id="nextM" aria-label="다음 달">›</button>
+    </div>
     <div class="mtitle" id="mtitle">이번 달 쓴 돈</div>
     <div class="total" id="total">-</div>
+    <div class="delta" id="delta"></div>
     <div class="cats" id="cats"></div>
   </div>
 
+  <div class="tabs">
+    <button class="tab on" id="tabList">내역</button>
+    <button class="tab" id="tabCal">달력</button>
+  </div>
+
   <div id="list"><div class="empty">불러오는 중...</div></div>
+
+  <div class="cal" id="cal">
+    <div class="cal-head"><span>일</span><span>월</span><span>화</span><span>수</span><span>목</span><span>금</span><span>토</span></div>
+    <div class="cal-grid" id="calGrid"></div>
+    <div class="cal-hint">날짜를 누르면 그날 쓴 내역이 보여요</div>
+  </div>
 </div>
+
+<div class="scrim" id="scrim"></div>
+<div class="sheet" id="sheet" role="dialog" aria-modal="true">
+  <div class="grabber"></div>
+  <h3 id="sheetT">-</h3>
+  <div class="st" id="sheetTotal">-</div>
+  <div class="list" id="sheetList"></div>
+</div>
+
 <script>
 // ▼▼▼ 여기만 채우면 됩니다 (앱의 config.js와 동일한 값) ▼▼▼
 const SUPABASE_URL = 'https://zzdztiakkfetwzivunyy.supabase.co';
@@ -74,15 +141,21 @@ const CATS = {
 };
 const won = n => Number(n).toLocaleString('ko-KR');
 const DAYS = ['일','월','화','수','목','금','토'];
+const catOf = r => CATS[r.category] ? r.category : 'etc';
+// 32,400 → "3.2만" / 6,800 → "6.8천"
+function fmtShort(n){
+  if(n >= 10000){ const v = n/10000; return (v >= 10 ? Math.round(v) : +v.toFixed(1)) + '만'; }
+  if(n >= 1000) return +(n/1000).toFixed(1) + '천';
+  return String(n);
+}
 // 시작 당일을 1일째로 계산 (로컬 자정 기준)
-function days(from){
+function daysSince(from){
   const [y,m,d] = from.split('-').map(Number);
   const s = new Date(y, m-1, d);
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   return Math.round((today - s) / 864e5) + 1;
 }
-
 function dayLabel(d){
   const now = new Date();
   const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -95,57 +168,145 @@ function dayLabel(d){
 // D-day는 데이터 없이도 표시
 for (const [k, from] of Object.entries(QUIT)) {
   const id = k === 'sober' ? 'Sober' : 'Smoke';
-  document.getElementById('dday'+id).textContent = days(from) + '일째';
-  const d = new Date(from);
-  document.getElementById('since'+id).textContent = `${d.getMonth()+1}월 ${d.getDate()}일부터`;
+  document.getElementById('dday'+id).textContent = daysSince(from) + '일째';
+  const [, m, d] = from.split('-').map(Number);
+  document.getElementById('since'+id).textContent = `${m}월 ${d}일부터`;
 }
 
-async function load(){
-  if(!SUPABASE_URL){ document.getElementById('updated').textContent='설정이 필요합니다 (SUPABASE_URL)'; return; }
+let allRows = [];        // 최근 6개월치
+let monthOffset = 0;     // 0=이번달, -1=지난달
+let view = 'list';
+
+async function fetchAll(){
   const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/payments?ts=gte.${monthStart}&order=ts.desc&select=*`, {
+  const since = new Date(now.getFullYear(), now.getMonth()-6, 1).toISOString();
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/payments?ts=gte.${since}&order=ts.desc&limit=2000&select=*`, {
     headers:{ apikey:SUPABASE_ANON_KEY, Authorization:`Bearer ${SUPABASE_ANON_KEY}` }
   });
-  const rows = await res.json();
+  allRows = await res.json();
   document.getElementById('updated').textContent = '업데이트: ' + new Date().toLocaleString('ko-KR');
-  document.getElementById('mtitle').textContent = `${now.getMonth()+1}월에 쓴 돈`;
-  document.getElementById('total').textContent = won(rows.reduce((s,r)=>s+r.amount,0)) + '원';
+  render();
+}
 
-  // 카테고리 바
-  const byCat = {};
-  rows.forEach(r => { const k = CATS[r.category] ? r.category : 'etc'; byCat[k]=(byCat[k]||0)+r.amount; });
-  const catRows = Object.entries(byCat).sort((a,b)=>b[1]-a[1]);
+const inMonth = (r, ym) => { const d = new Date(r.ts); return d.getFullYear() === ym.getFullYear() && d.getMonth() === ym.getMonth(); };
+
+function render(){
+  const now = new Date();
+  const ym = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+  const isThis = monthOffset === 0;
+  const rows = allRows.filter(r => inMonth(r, ym));
+  const total = rows.reduce((s,r) => s + r.amount, 0);
+
+  // 지난달 대비 (이번 달=같은 기간, 과거 달=전체)
+  const prevYM = new Date(ym.getFullYear(), ym.getMonth()-1, 1);
+  const prevRows = allRows.filter(r => inMonth(r, prevYM) && (isThis ? new Date(r.ts).getDate() <= now.getDate() : true));
+  const prevTotal = prevRows.reduce((s,r) => s + r.amount, 0);
+
+  document.getElementById('mnavT').textContent = `${ym.getFullYear()}년 ${ym.getMonth()+1}월`;
+  document.getElementById('nextM').disabled = isThis;
+  document.getElementById('mtitle').textContent = isThis ? '이번 달 쓴 돈' : '이 달에 쓴 돈';
+  document.getElementById('total').textContent = won(total) + '원';
+
+  const deltaEl = document.getElementById('delta');
+  if (prevTotal > 0) {
+    const d = total - prevTotal;
+    deltaEl.style.display = 'block';
+    deltaEl.style.color = d <= 0 ? '#4E9BFA' : '#F04452';
+    deltaEl.textContent = `지난달${isThis?' 같은 기간':''}보다 ${won(Math.abs(d))}원 ${d<=0 ? (isThis?'아끼는 중':'아꼈어요') : (isThis?'더 쓰는 중':'더 썼어요')}`;
+  } else deltaEl.style.display = 'none';
+
+  // 카테고리 바 + 지난달 대비
+  const byCat = {}, prevByCat = {};
+  rows.forEach(r => { const k = catOf(r); byCat[k] = (byCat[k]||0) + r.amount; });
+  prevRows.forEach(r => { const k = catOf(r); prevByCat[k] = (prevByCat[k]||0) + r.amount; });
+  const catRows = Object.entries(byCat).sort((a,b) => b[1]-a[1]);
   const max = catRows[0] ? catRows[0][1] : 1;
-  document.getElementById('cats').innerHTML = catRows.map(([k,v])=>`
-    <div class="cat-row"><span class="name">${CATS[k].label}</span>
+  document.getElementById('cats').innerHTML = catRows.map(([k,v]) => {
+    const pd = prevByCat[k] != null ? v - prevByCat[k] : null;
+    const cd = pd !== null && pd !== 0
+      ? `<div class="cd" style="color:${pd<0?'#4E9BFA':'#F04452'}">${pd<0?'▼':'▲'} ${fmtShort(Math.abs(pd))}</div>` : '';
+    return `<div class="cat-row"><span class="name">${CATS[k].label}</span>
       <span class="bar"><i style="width:${Math.max(5,v/max*100)}%;background:${CATS[k].color}"></i></span>
-      <span class="amt">${won(v)}원</span></div>`).join('');
+      <span class="cat-col"><div class="amt">${won(v)}원</div>${cd}</span></div>`;
+  }).join('');
 
-  // 날짜별 내역
+  renderList(rows);
+  renderCal(rows, ym, isThis, now);
+  syncTabs();
+}
+
+const itemHtml = r => {
+  const c = CATS[catOf(r)];
+  const d = new Date(r.ts);
+  const hm = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+  return `<div class="item">
+    <div class="dot" style="background:${c.color}26"><i style="background:${c.color}"></i></div>
+    <div class="mid"><div class="m-name">${r.merchant}</div><div class="m-sub">${hm} · ${c.label}</div>${r.memo?`<div class="m-memo">${r.memo}</div>`:''}</div>
+    <div class="m-amt">${won(r.amount)}원</div></div>`;
+};
+
+function renderList(rows){
   const groups = [];
   rows.forEach(r => {
     const label = dayLabel(new Date(r.ts));
-    let g = groups.find(x=>x.label===label);
-    if(!g){ g={label, items:[]}; groups.push(g); }
+    let g = groups.find(x => x.label === label);
+    if(!g){ g = {label, items:[]}; groups.push(g); }
     g.items.push(r);
   });
-  document.getElementById('list').innerHTML = groups.map(g=>`
+  document.getElementById('list').innerHTML = groups.map(g => `
     <div class="day-card">
       <div class="day-head"><span>${g.label}</span><span>${won(g.items.reduce((s,x)=>s+x.amount,0))}원</span></div>
-      ${g.items.map(r=>{
-        const c = CATS[r.category] ? CATS[r.category] : CATS.etc;
-        const d = new Date(r.ts);
-        const hm = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
-        return `<div class="item">
-          <div class="dot" style="background:${c.color}26"><i style="background:${c.color}"></i></div>
-          <div class="mid"><div class="m-name">${r.merchant}</div><div class="m-sub">${hm} · ${c.label}</div>${r.memo?`<div class="m-memo">${r.memo}</div>`:''}</div>
-          <div class="m-amt">${won(r.amount)}원</div></div>`;
-      }).join('')}
-    </div>`).join('') || '<div class="empty">이번 달 기록이 아직 없어요</div>';
+      ${g.items.map(itemHtml).join('')}
+    </div>`).join('') || '<div class="empty">이 달 기록이 아직 없어요</div>';
 }
-load();
-setInterval(load, 60000);
+
+function renderCal(rows, ym, isThis, now){
+  const y = ym.getFullYear(), m = ym.getMonth();
+  const dim = new Date(y, m+1, 0).getDate();
+  const firstDow = new Date(y, m, 1).getDay();
+  const totals = {};
+  rows.forEach(r => { const d = new Date(r.ts).getDate(); totals[d] = (totals[d]||0) + r.amount; });
+  let html = '';
+  for(let i=0;i<firstDow;i++) html += '<span></span>';
+  for(let d=1; d<=dim; d++){
+    const isToday = isThis && d === now.getDate();
+    const isFuture = isThis && d > now.getDate();
+    html += `<button class="cal-cell${isToday?' today':''}${isFuture?' future':''}" data-d="${d}" ${isFuture?'disabled':''}>
+      <span class="dn">${d}</span><span class="da">${totals[d]?fmtShort(totals[d]):'&nbsp;'}</span></button>`;
+  }
+  document.getElementById('calGrid').innerHTML = html;
+}
+
+// 탭
+document.getElementById('tabList').onclick = () => { view='list'; syncTabs(); };
+document.getElementById('tabCal').onclick = () => { view='cal'; syncTabs(); };
+function syncTabs(){
+  document.getElementById('tabList').classList.toggle('on', view==='list');
+  document.getElementById('tabCal').classList.toggle('on', view==='cal');
+  document.getElementById('list').style.display = view==='list' ? 'block' : 'none';
+  document.getElementById('cal').style.display = view==='cal' ? 'block' : 'none';
+}
+// 월 이동
+document.getElementById('prevM').onclick = () => { monthOffset--; render(); };
+document.getElementById('nextM').onclick = () => { if(monthOffset<0){ monthOffset++; render(); } };
+
+// 달력 날짜 클릭 → 상세 시트
+document.getElementById('calGrid').addEventListener('click', e => {
+  const b = e.target.closest('.cal-cell'); if(!b || b.disabled) return;
+  const d = +b.dataset.d;
+  const now = new Date();
+  const ym = new Date(now.getFullYear(), now.getMonth()+monthOffset, 1);
+  const dayRows = allRows.filter(r => inMonth(r, ym) && new Date(r.ts).getDate() === d)
+    .sort((a,b2) => new Date(b2.ts) - new Date(a.ts));
+  document.getElementById('sheetT').textContent = `${ym.getMonth()+1}월 ${d}일`;
+  document.getElementById('sheetTotal').textContent = won(dayRows.reduce((s,r)=>s+r.amount,0)) + '원';
+  document.getElementById('sheetList').innerHTML = dayRows.map(itemHtml).join('') || '<div class="empty">이날은 쓴 돈이 없어요 👍</div>';
+  document.body.classList.add('open');
+});
+document.getElementById('scrim').onclick = () => document.body.classList.remove('open');
+
+fetchAll();
+setInterval(fetchAll, 60000);
 </script>
 </body>
 </html>
