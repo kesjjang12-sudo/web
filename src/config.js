@@ -52,5 +52,5 @@ export const CATEGORY_RULES = {
 // 5) Supabase 연동 (여자친구용 웹페이지 데이터 동기화)
 //    supabase.com 에서 프로젝트 만들고 아래 두 값을 채우세요.
 //    Settings > API 에서 확인 가능. 비워두면 동기화 없이 폰에서만 동작.
-export const SUPABASE_URL = '';        // 예: 'https://abcdefg.supabase.co'
-export const SUPABASE_ANON_KEY = '';   // 예: 'eyJhbGciOi...'
+export const SUPABASE_URL = 'https://zzdztiakkfetwzivunyy.supabase.co';
+export const SUPABASE_ANON_KEY = 'sb_publishable_IZqj43JnqNPjuYFsW0yLOQ_3-HjIQL7';
