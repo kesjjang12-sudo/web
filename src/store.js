@@ -54,7 +54,26 @@ export async function updateItem(id, { category, memo }) {
   return list;
 }
 
+// 소프트 삭제: 목록에서 숨기고 '삭제된 항목'으로 이동 (복원 가능)
 export async function deletePayment(id) {
+  const list = await getPayments();
+  const rec = list.find(p => p.id === id);
+  if (rec) rec.deleted = true;
+  await AsyncStorage.setItem(KEY, JSON.stringify(list));
+  deleteFromSupabase(id); // 웹 조회 페이지에서는 안 보이게
+  return list;
+}
+
+export async function restorePayment(id) {
+  const list = await getPayments();
+  const rec = list.find(p => p.id === id);
+  if (rec) { delete rec.deleted; syncToSupabase(rec); }
+  await AsyncStorage.setItem(KEY, JSON.stringify(list));
+  return list;
+}
+
+// 완전 삭제 (복원 불가)
+export async function purgePayment(id) {
   const list = await getPayments();
   const next = list.filter(p => p.id !== id);
   await AsyncStorage.setItem(KEY, JSON.stringify(next));

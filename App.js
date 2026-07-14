@@ -5,7 +5,7 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import RNAndroidNotificationListener from 'react-native-android-notification-listener';
-import { getPayments, savePayment, updateItem, deletePayment, syncAll } from './src/store';
+import { getPayments, savePayment, updateItem, deletePayment, restorePayment, purgePayment, syncAll } from './src/store';
 import { parsePayment } from './src/parser';
 import { QUIT_GOALS, CATEGORIES, SUPABASE_URL } from './src/config';
 
@@ -15,7 +15,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r6'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r7'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const CAT = Object.fromEntries(CATEGORIES.map(c => [c.key, c]));
 const won = n => n.toLocaleString('ko-KR');
 const DAY_NAMES = ['일','월','화','수','목','금','토'];
@@ -47,7 +47,8 @@ function daysSince(start) {
   return Math.round((today - s) / 86400000) + 1;
 }
 const srcName = app => !app || app === 'manual' ? '직접 입력' : app === 'test' ? '테스트'
-  : /messaging/.test(app) ? '문자' : '카드 알림';
+  : /messaging/.test(app) ? '문자'
+  : /kakaobank|kbstar|sbanking/.test(app) ? '은행' : '카드 알림';
 
 export default function App() {
   const [perm, setPerm] = useState('unknown');
@@ -63,6 +64,7 @@ export default function App() {
   const [addName, setAddName] = useState('');
   const [addAmt, setAddAmt] = useState('');
   const [addCat, setAddCat] = useState('food');
+  const [showDeleted, setShowDeleted] = useState(false);
 
   const load = useCallback(async () => {
     const [p, st] = await Promise.all([
@@ -90,7 +92,8 @@ export default function App() {
     const d = new Date(p.ts);
     return d.getFullYear() === ym.getFullYear() && d.getMonth() === ym.getMonth();
   };
-  const monthPays = useMemo(() => payments.filter(p => inMonth(p, viewYM)), [payments, monthOffset]);
+  const monthPays = useMemo(() => payments.filter(p => !p.deleted && inMonth(p, viewYM)), [payments, monthOffset]);
+  const monthDeleted = useMemo(() => payments.filter(p => p.deleted && inMonth(p, viewYM)), [payments, monthOffset]);
   const total = monthPays.reduce((s, p) => s + p.amount, 0);
 
   // 지난달 대비: 이번 달을 보고 있으면 "같은 기간(1일~오늘)" 비교, 과거 달은 한 달 전체 비교
@@ -98,7 +101,7 @@ export default function App() {
     const prevYM = new Date(viewYM.getFullYear(), viewYM.getMonth() - 1, 1);
     const sameWindow = monthOffset === 0;
     return payments.filter(p => {
-      if (!inMonth(p, prevYM)) return false;
+      if (p.deleted || !inMonth(p, prevYM)) return false;
       return sameWindow ? new Date(p.ts).getDate() <= now.getDate() : true;
     });
   }, [payments, monthOffset]);
@@ -169,9 +172,23 @@ export default function App() {
   }, [addName, addAmt, addCat]);
 
   const confirmDelete = useCallback((p) => {
-    Alert.alert('삭제할까요?', `${p.merchant} · ${won(p.amount)}원`, [
+    Alert.alert('삭제할까요?', `${p.merchant} · ${won(p.amount)}원\n아래 "삭제된 항목"에서 복원할 수 있어요.`, [
       { text: '취소', style: 'cancel' },
-      { text: '삭제', style: 'destructive', onPress: async () => setPayments(await deletePayment(p.id)) },
+      { text: '삭제', style: 'destructive', onPress: async () => setPayments([...await deletePayment(p.id)]) },
+    ]);
+  }, []);
+
+  const confirmRestore = useCallback((p) => {
+    Alert.alert('복원할까요?', `${p.merchant} · ${won(p.amount)}원`, [
+      { text: '취소', style: 'cancel' },
+      { text: '복원', onPress: async () => setPayments([...await restorePayment(p.id)]) },
+    ]);
+  }, []);
+
+  const confirmPurge = useCallback((p) => {
+    Alert.alert('완전히 삭제할까요?', `${p.merchant} · ${won(p.amount)}원\n복원할 수 없어요.`, [
+      { text: '취소', style: 'cancel' },
+      { text: '완전 삭제', style: 'destructive', onPress: async () => setPayments([...await purgePayment(p.id)]) },
     ]);
   }, []);
 
@@ -345,6 +362,35 @@ export default function App() {
 
         {monthPays.length === 0 && (
           <Text style={s.empty}>아직 이 달 기록이 없어요.{'\n'}카드 결제 알림이 오면 자동으로 쌓이고,{'\n'}현금은 아래 + 버튼으로 직접 추가할 수 있어요.</Text>
+        )}
+
+        {/* 삭제된 항목 (복원 가능) */}
+        {monthDeleted.length > 0 && (
+          <View style={s.dayCard}>
+            <TouchableOpacity style={s.dayHead} activeOpacity={0.6} onPress={() => setShowDeleted(v => !v)}>
+              <Text style={s.dayHeadT}>🗑 삭제된 항목 {monthDeleted.length}건</Text>
+              <Text style={s.dayHeadT}>{showDeleted ? '접기 ▴' : '보기 ▾'}</Text>
+            </TouchableOpacity>
+            {showDeleted && monthDeleted.map(p => {
+              const cat = CAT[p.category] || CAT.etc;
+              return (
+                <TouchableOpacity key={p.id} style={[s.item, { opacity: 0.5 }]} activeOpacity={0.6}
+                  onPress={() => confirmRestore(p)} onLongPress={() => confirmPurge(p)} delayLongPress={450}>
+                  <View style={[s.dot, { backgroundColor: cat.color + '26' }]}>
+                    <View style={[s.dotCore, { backgroundColor: cat.color }]} />
+                  </View>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={[s.itemName, { textDecorationLine: 'line-through' }]} numberOfLines={1}>{p.merchant}</Text>
+                    <Text style={s.itemSub}>{hhmm(p.ts)} · {srcName(p.app)} · 탭하면 복원</Text>
+                  </View>
+                  <Text style={s.itemAmt}>{won(p.amount)}원</Text>
+                </TouchableOpacity>
+              );
+            })}
+            {showDeleted && (
+              <Text style={[s.hint, { marginTop: 2, marginBottom: 8 }]}>탭 = 복원 · 길게 = 완전 삭제 (합계에는 포함 안 돼요)</Text>
+            )}
+          </View>
         )}
 
         {/* 도움말/테스트 */}
