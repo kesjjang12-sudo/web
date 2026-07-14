@@ -21,7 +21,11 @@ const STOPWORDS = [
 
 export function parsePayment(rawText) {
   if (!rawText) return null;
-  const text = rawText.replace(/\n/g, ' ').trim();
+  let text = rawText.replace(/\n/g, ' ').trim();
+
+  // 누적/잔액/한도 금액은 결제 금액이 아니므로 먼저 제거
+  // (예: "네이버파이낸셜 승인 120원 누적1,093,380원" → 누적 부분 삭제)
+  text = text.replace(/(누적|잔액|한도)\s*:?\s*[\d,]+\s*원?/g, ' ');
 
   // 결제 알림이 아닌 것 거르기 (광고, 이벤트 등)
   const amountMatch = text.match(AMOUNT_RE);
@@ -35,10 +39,10 @@ export function parsePayment(rawText) {
 
   // 가맹점명 추출: 금액/날짜/시간/상투어/마스킹이름(김*성) 제거 후 남는 토큰
   let cleaned = text
-    .replace(AMOUNT_RE, ' ')
+    .replace(/([\d,]{2,})\s*원/g, ' ')         // 모든 금액 제거 (첫 번째만이 아니라 전부)
     .replace(DATE_RE, ' ')
     .replace(TIME_RE, ' ')
-    .replace(/[가-힣]\*+[가-힣]?/g, ' ')     // 김*성 같은 마스킹 이름
+    .replace(/\S*\*+\S*/g, ' ')                // 김*성, 롯데0*5* 같은 마스킹 토큰
     .replace(/\[.*?\]|\(.*?\)/g, ' ')          // [Web발신] 등
     .replace(/[|·]/g, ' ');
   let tokens = cleaned.split(/\s+/).map(t => t.replace(/(에서|됐어요|되었습니다)$/,'')).filter(t => {

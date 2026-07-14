@@ -15,6 +15,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
+const REV = 'r6'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const CAT = Object.fromEntries(CATEGORIES.map(c => [c.key, c]));
 const won = n => n.toLocaleString('ko-KR');
 const DAY_NAMES = ['일','월','화','수','목','금','토'];
@@ -218,7 +219,7 @@ export default function App() {
 
         <View style={s.topRow}>
           <Text style={s.appTitle}>클린페이</Text>
-          <Text style={s.appSub}>은성의 가계부</Text>
+          <Text style={s.appSub}>은성의 가계부 · {REV}</Text>
         </View>
 
         {/* 권한 배너 */}
