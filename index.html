@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>은성이 리포트 💙</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#101013; color:#E5E8EB; font-family:-apple-system,'Noto Sans KR',sans-serif; min-height:100vh; }
+  .wrap { max-width:430px; margin:0 auto; padding:22px 20px 48px; }
+  .title { font-size:21px; font-weight:800; letter-spacing:-.02em; margin:8px 0 2px; }
+  .sub { color:#6B7684; font-size:12px; }
+  .ddays { display:flex; gap:12px; margin:18px 0 12px; }
+  .dday { flex:1; background:#17171C; border-radius:20px; padding:18px; }
+  .dday .tag { font-size:13px; color:#8B95A1; font-weight:600; }
+  .dday .num { font-size:26px; font-weight:800; margin-top:4px; letter-spacing:-.02em; }
+  .dday .since { font-size:12px; color:#6B7684; margin-top:3px; }
+  .dday.sober .num{ color:#16C47F; } .dday.smoke .num{ color:#4E9BFA; }
+  .month { background:#17171C; border-radius:20px; padding:20px; margin-bottom:12px; }
+  .mtitle { color:#8B95A1; font-size:14px; }
+  .total { font-size:34px; font-weight:800; margin-top:2px; letter-spacing:-.03em; }
+  .cats { margin-top:18px; display:grid; gap:11px; }
+  .cat-row { display:grid; grid-template-columns:66px 1fr 86px; align-items:center; gap:12px; font-size:14px; }
+  .cat-row .name { color:#8B95A1; }
+  .cat-row .bar { height:7px; border-radius:4px; background:#26262C; overflow:hidden; }
+  .cat-row .bar i { display:block; height:100%; border-radius:4px; }
+  .cat-row .amt { text-align:right; font-weight:600; }
+  .day-card { background:#17171C; border-radius:20px; padding:8px 18px; margin-bottom:12px; }
+  .day-head { display:flex; justify-content:space-between; padding:12px 0; color:#6B7684; font-size:13px; font-weight:600; }
+  .item { display:flex; align-items:center; gap:14px; padding:11px 0; }
+  .dot { width:42px; height:42px; border-radius:21px; flex:none; display:grid; place-items:center; }
+  .dot i { width:14px; height:14px; border-radius:7px; display:block; }
+  .mid { flex:1; min-width:0; }
+  .m-name { font-weight:700; font-size:15.5px; letter-spacing:-.02em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .m-sub { font-size:12.5px; color:#6B7684; margin-top:2px; }
+  .m-amt { font-weight:700; font-size:15.5px; letter-spacing:-.02em; }
+  .m-memo { font-size:12.5px; color:#E5B84B; margin-top:3px; line-height:1.35; }
+  .empty { color:#8B95A1; text-align:center; padding:34px 0; font-size:14px; line-height:22px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="title">클린페이 · 은성이 리포트</div>
+  <div class="sub" id="updated">불러오는 중...</div>
+
+  <div class="ddays">
+    <div class="dday sober"><div class="tag">금주</div><div class="num" id="ddaySober">-</div><div class="since" id="sinceSober"></div></div>
+    <div class="dday smoke"><div class="tag">금연</div><div class="num" id="ddaySmoke">-</div><div class="since" id="sinceSmoke"></div></div>
+  </div>
+
+  <div class="month">
+    <div class="mtitle" id="mtitle">이번 달 쓴 돈</div>
+    <div class="total" id="total">-</div>
+    <div class="cats" id="cats"></div>
+  </div>
+
+  <div id="list"><div class="empty">불러오는 중...</div></div>
+</div>
+<script>
+// ▼▼▼ 여기만 채우면 됩니다 (앱의 config.js와 동일한 값) ▼▼▼
+const SUPABASE_URL = 'https://zzdztiakkfetwzivunyy.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_IZqj43JnqNPjuYFsW0yLOQ_3-HjIQL7';
+const QUIT = { sober: '2026-07-13', smoke: '2026-07-13' };  // 금주/금연 시작일
+// ▲▲▲
+
+const CATS = {
+  food:   {label:'식비',      color:'#F2917A'},
+  cafe:   {label:'카페·간식', color:'#E5B84B'},
+  transit:{label:'교통',      color:'#6FB4F0'},
+  shop:   {label:'쇼핑',      color:'#B79CF5'},
+  living: {label:'생활·마트', color:'#5BC8C0'},
+  sub:    {label:'구독·통신', color:'#7F8EF2'},
+  etc:    {label:'기타',      color:'#97A1B0'},
+};
+const won = n => Number(n).toLocaleString('ko-KR');
+const DAYS = ['일','월','화','수','목','금','토'];
+// 시작 당일을 1일째로 계산 (로컬 자정 기준)
+function days(from){
+  const [y,m,d] = from.split('-').map(Number);
+  const s = new Date(y, m-1, d);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.round((today - s) / 864e5) + 1;
+}
+
+function dayLabel(d){
+  const now = new Date();
+  const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const t1 = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diff = Math.round((t0 - t1) / 864e5);
+  const base = `${d.getMonth()+1}월 ${d.getDate()}일`;
+  return diff === 0 ? base+' · 오늘' : diff === 1 ? base+' · 어제' : base+' · '+DAYS[d.getDay()]+'요일';
+}
+
+// D-day는 데이터 없이도 표시
+for (const [k, from] of Object.entries(QUIT)) {
+  const id = k === 'sober' ? 'Sober' : 'Smoke';
+  document.getElementById('dday'+id).textContent = days(from) + '일째';
+  const d = new Date(from);
+  document.getElementById('since'+id).textContent = `${d.getMonth()+1}월 ${d.getDate()}일부터`;
+}
+
+async function load(){
+  if(!SUPABASE_URL){ document.getElementById('updated').textContent='설정이 필요합니다 (SUPABASE_URL)'; return; }
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/payments?ts=gte.${monthStart}&order=ts.desc&select=*`, {
+    headers:{ apikey:SUPABASE_ANON_KEY, Authorization:`Bearer ${SUPABASE_ANON_KEY}` }
+  });
+  const rows = await res.json();
+  document.getElementById('updated').textContent = '업데이트: ' + new Date().toLocaleString('ko-KR');
+  document.getElementById('mtitle').textContent = `${now.getMonth()+1}월에 쓴 돈`;
+  document.getElementById('total').textContent = won(rows.reduce((s,r)=>s+r.amount,0)) + '원';
+
+  // 카테고리 바
+  const byCat = {};
+  rows.forEach(r => { const k = CATS[r.category] ? r.category : 'etc'; byCat[k]=(byCat[k]||0)+r.amount; });
+  const catRows = Object.entries(byCat).sort((a,b)=>b[1]-a[1]);
+  const max = catRows[0] ? catRows[0][1] : 1;
+  document.getElementById('cats').innerHTML = catRows.map(([k,v])=>`
+    <div class="cat-row"><span class="name">${CATS[k].label}</span>
+      <span class="bar"><i style="width:${Math.max(5,v/max*100)}%;background:${CATS[k].color}"></i></span>
+      <span class="amt">${won(v)}원</span></div>`).join('');
+
+  // 날짜별 내역
+  const groups = [];
+  rows.forEach(r => {
+    const label = dayLabel(new Date(r.ts));
+    let g = groups.find(x=>x.label===label);
+    if(!g){ g={label, items:[]}; groups.push(g); }
+    g.items.push(r);
+  });
+  document.getElementById('list').innerHTML = groups.map(g=>`
+    <div class="day-card">
+      <div class="day-head"><span>${g.label}</span><span>${won(g.items.reduce((s,x)=>s+x.amount,0))}원</span></div>
+      ${g.items.map(r=>{
+        const c = CATS[r.category] ? CATS[r.category] : CATS.etc;
+        const d = new Date(r.ts);
+        const hm = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+        return `<div class="item">
+          <div class="dot" style="background:${c.color}26"><i style="background:${c.color}"></i></div>
+          <div class="mid"><div class="m-name">${r.merchant}</div><div class="m-sub">${hm} · ${c.label}</div>${r.memo?`<div class="m-memo">${r.memo}</div>`:''}</div>
+          <div class="m-amt">${won(r.amount)}원</div></div>`;
+      }).join('')}
+    </div>`).join('') || '<div class="empty">이번 달 기록이 아직 없어요</div>';
+}
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>
