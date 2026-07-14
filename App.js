@@ -5,7 +5,7 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import RNAndroidNotificationListener from 'react-native-android-notification-listener';
-import { getPayments, savePayment, updateCategory, deletePayment, syncAll } from './src/store';
+import { getPayments, savePayment, updateItem, deletePayment, syncAll } from './src/store';
 import { parsePayment } from './src/parser';
 import { QUIT_GOALS, CATEGORIES, SUPABASE_URL } from './src/config';
 
@@ -55,7 +55,9 @@ export default function App() {
   const [monthOffset, setMonthOffset] = useState(0); // 0=이번달, -1=지난달 ...
   const [view, setView] = useState('list');          // 'list' | 'cal'
   const [selDay, setSelDay] = useState(null);        // 달력에서 선택한 일자 (숫자)
-  const [pickTarget, setPickTarget] = useState(null); // 카테고리 바꿀 결제
+  const [pickTarget, setPickTarget] = useState(null); // 수정할 결제 (카테고리·메모)
+  const [editCat, setEditCat] = useState('etc');
+  const [editMemo, setEditMemo] = useState('');
   const [adding, setAdding] = useState(false);        // 직접 추가 모달
   const [addName, setAddName] = useState('');
   const [addAmt, setAddAmt] = useState('');
@@ -144,10 +146,16 @@ export default function App() {
   const selDayTotal = selDayPays.reduce((s, p) => s + p.amount, 0);
 
   // ── 액션 ──
-  const pickCategory = useCallback(async (catKey) => {
-    const next = await updateCategory(pickTarget.id, catKey);
+  const openEdit = useCallback((p) => {
+    setEditCat(CAT[p.category] ? p.category : 'etc');
+    setEditMemo(p.memo || '');
+    setPickTarget(p);
+  }, []);
+
+  const saveEdit = useCallback(async () => {
+    const next = await updateItem(pickTarget.id, { category: editCat, memo: editMemo.trim() });
     setPayments([...next]); setPickTarget(null);
-  }, [pickTarget]);
+  }, [pickTarget, editCat, editMemo]);
 
   const addManual = useCallback(async () => {
     const amount = parseInt(addAmt.replace(/[^\d]/g, ''), 10);
@@ -187,7 +195,7 @@ export default function App() {
     const cat = CAT[p.category] || CAT.etc;
     return (
       <TouchableOpacity key={p.id} style={s.item} activeOpacity={0.6}
-        onPress={() => { if (fromDaySheet) setSelDay(null); setPickTarget(p); }}
+        onPress={() => { if (fromDaySheet) setSelDay(null); openEdit(p); }}
         onLongPress={() => { if (fromDaySheet) setSelDay(null); confirmDelete(p); }} delayLongPress={450}>
         <View style={[s.dot, { backgroundColor: cat.color + '26' }]}>
           <View style={[s.dotCore, { backgroundColor: cat.color }]} />
@@ -195,6 +203,7 @@ export default function App() {
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={s.itemName} numberOfLines={1}>{p.merchant}</Text>
           <Text style={s.itemSub}>{hhmm(p.ts)} · {srcName(p.app)} · {cat.label}</Text>
+          {!!p.memo && <Text style={s.itemMemo} numberOfLines={2}>{p.memo}</Text>}
         </View>
         <Text style={s.itemAmt}>{won(p.amount)}원</Text>
       </TouchableOpacity>
@@ -368,23 +377,28 @@ export default function App() {
         </TouchableOpacity>
       </Modal>
 
-      {/* 카테고리 선택 모달 */}
+      {/* 내역 수정 모달 (카테고리 + 메모) */}
       <Modal visible={!!pickTarget} transparent animationType="slide" onRequestClose={() => setPickTarget(null)}>
         <TouchableOpacity style={s.modalBg} activeOpacity={1} onPress={() => setPickTarget(null)}>
           <View style={s.modalCard} onStartShouldSetResponder={() => true}>
             <View style={s.grabber} />
-            <Text style={s.modalTitle}>카테고리 선택</Text>
-            <Text style={s.modalSub}>"{pickTarget?.merchant}" — 앞으로 이 가맹점은 선택한 카테고리로 기억해요</Text>
+            <Text style={s.modalTitle}>{pickTarget?.merchant}</Text>
+            <Text style={s.modalSub}>{pickTarget ? won(pickTarget.amount) + '원' : ''} — 카테고리를 바꾸면 이 가맹점은 그걸로 기억해요</Text>
             <View style={s.catGrid}>
               {CATEGORIES.map(c => (
                 <TouchableOpacity key={c.key} activeOpacity={0.7}
-                  style={[s.catBtn, pickTarget?.category === c.key && s.catBtnOn]}
-                  onPress={() => pickCategory(c.key)}>
+                  style={[s.catBtn, editCat === c.key && s.catBtnOn]}
+                  onPress={() => setEditCat(c.key)}>
                   <View style={[s.catBtnDot, { backgroundColor: c.color }]} />
-                  <Text style={[s.catBtnT, pickTarget?.category === c.key && { color: C.text }]}>{c.label}</Text>
+                  <Text style={[s.catBtnT, editCat === c.key && { color: C.text }]}>{c.label}</Text>
                 </TouchableOpacity>
               ))}
             </View>
+            <TextInput style={s.input} placeholder="메모 (예: 친구랑 점심, 회사 경비 처리)" placeholderTextColor={C.faint}
+              value={editMemo} onChangeText={setEditMemo} />
+            <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={saveEdit}>
+              <Text style={s.bigBtnT}>저장</Text>
+            </TouchableOpacity>
           </View>
         </TouchableOpacity>
       </Modal>
@@ -469,6 +483,7 @@ const s = StyleSheet.create({
   itemName: { color: C.text, fontWeight: '700', fontSize: 15.5, letterSpacing: -0.3 },
   itemSub: { color: C.faint, fontSize: 12.5, marginTop: 2 },
   itemAmt: { color: C.text, fontWeight: '700', fontSize: 15.5, letterSpacing: -0.3 },
+  itemMemo: { color: C.gold, fontSize: 12.5, marginTop: 3, lineHeight: 17 },
 
   calCard: { backgroundColor: C.card, borderRadius: 20, padding: 14, paddingBottom: 10, marginBottom: 12 },
   calHead: { flexDirection: 'row', marginBottom: 6 },

@@ -34,6 +34,7 @@
   .m-name { font-weight:700; font-size:15.5px; letter-spacing:-.02em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .m-sub { font-size:12.5px; color:#6B7684; margin-top:2px; }
   .m-amt { font-weight:700; font-size:15.5px; letter-spacing:-.02em; }
+  .m-memo { font-size:12.5px; color:#E5B84B; margin-top:3px; line-height:1.35; }
   .empty { color:#8B95A1; text-align:center; padding:34px 0; font-size:14px; line-height:22px; }
 </style>
 </head>
@@ -138,7 +139,7 @@ async function load(){
         const hm = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
         return `<div class="item">
           <div class="dot" style="background:${c.color}26"><i style="background:${c.color}"></i></div>
-          <div class="mid"><div class="m-name">${r.merchant}</div><div class="m-sub">${hm} · ${c.label}</div></div>
+          <div class="mid"><div class="m-name">${r.merchant}</div><div class="m-sub">${hm} · ${c.label}</div>${r.memo?`<div class="m-memo">${r.memo}</div>`:''}</div>
           <div class="m-amt">${won(r.amount)}원</div></div>`;
       }).join('')}
     </div>`).join('') || '<div class="empty">이번 달 기록이 아직 없어요</div>';

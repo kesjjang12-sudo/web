@@ -36,16 +36,20 @@ export async function savePayment(record) {
   return next;
 }
 
-// 카테고리 변경 + 같은 가맹점 기억 (기억하면 이후 자동 분류에 반영)
-export async function updateCategory(id, category) {
+// 내역 수정 (카테고리/메모). 카테고리를 바꾸면 같은 가맹점을 기억해 이후 자동 분류에 반영
+export async function updateItem(id, { category, memo }) {
   const list = await getPayments();
   const rec = list.find(p => p.id === id);
   if (!rec) return list;
-  rec.category = category;
+  const catChanged = category != null && category !== rec.category;
+  if (category != null) rec.category = category;
+  if (memo != null) rec.memo = memo;
   await AsyncStorage.setItem(KEY, JSON.stringify(list));
-  const memory = await getMerchantMap();
-  memory[rec.merchant] = category;
-  await AsyncStorage.setItem(MERCHANT_CAT_KEY, JSON.stringify(memory));
+  if (catChanged) {
+    const memory = await getMerchantMap();
+    memory[rec.merchant] = category;
+    await AsyncStorage.setItem(MERCHANT_CAT_KEY, JSON.stringify(memory));
+  }
   syncToSupabase(rec);
   return list;
 }
