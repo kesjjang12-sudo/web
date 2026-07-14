@@ -4,6 +4,18 @@ import { guessCategory } from './parser';
 
 const KEY = 'payments_v1';
 const MERCHANT_CAT_KEY = 'merchant_categories_v1';
+const BUDGET_KEY = 'budgets_v1';
+
+// 예산: { total: 전체 월예산(0=미설정), cats: { food: 금액, ... } }
+export async function getBudgets() {
+  try {
+    const raw = await AsyncStorage.getItem(BUDGET_KEY);
+    return raw ? JSON.parse(raw) : { total: 0, cats: {} };
+  } catch { return { total: 0, cats: {} }; }
+}
+export async function saveBudgets(b) {
+  await AsyncStorage.setItem(BUDGET_KEY, JSON.stringify(b));
+}
 
 export async function getPayments() {
   try {
@@ -91,6 +103,7 @@ export async function getMerchantMap() {
 // ---------------- Supabase 동기화 ----------------
 export async function syncToSupabase(record) {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+  if (record.type === 'income') return; // 수입은 폰에만 기록 (웹 페이지는 지출 전용)
   try {
     await fetch(`${SUPABASE_URL}/rest/v1/payments`, {
       method: 'POST',

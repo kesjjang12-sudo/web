@@ -1,11 +1,14 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   SafeAreaView, View, Text, TouchableOpacity, ScrollView, StyleSheet,
-  Alert, Modal, TextInput, AppState, RefreshControl,
+  Alert, Modal, TextInput, AppState, RefreshControl, Share,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import RNAndroidNotificationListener from 'react-native-android-notification-listener';
-import { getPayments, savePayment, updateItem, deletePayment, restorePayment, purgePayment, syncAll } from './src/store';
+import {
+  getPayments, savePayment, updateItem, deletePayment, restorePayment, purgePayment,
+  syncAll, getBudgets, saveBudgets,
+} from './src/store';
 import { parsePayment } from './src/parser';
 import { QUIT_GOALS, CATEGORIES, SUPABASE_URL } from './src/config';
 
@@ -15,7 +18,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r7'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r8'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const CAT = Object.fromEntries(CATEGORIES.map(c => [c.key, c]));
 const won = n => n.toLocaleString('ko-KR');
 const DAY_NAMES = ['일','월','화','수','목','금','토'];
@@ -50,27 +53,35 @@ const srcName = app => !app || app === 'manual' ? '직접 입력' : app === 'tes
   : /messaging/.test(app) ? '문자'
   : /kakaobank|kbstar|sbanking/.test(app) ? '은행' : '카드 알림';
 
+const isIncome = p => p.type === 'income';
+
 export default function App() {
   const [perm, setPerm] = useState('unknown');
   const [payments, setPayments] = useState([]);
+  const [budgets, setBudgets] = useState({ total: 0, cats: {} });
   const [refreshing, setRefreshing] = useState(false);
   const [monthOffset, setMonthOffset] = useState(0); // 0=이번달, -1=지난달 ...
-  const [view, setView] = useState('list');          // 'list' | 'cal'
-  const [selDay, setSelDay] = useState(null);        // 달력에서 선택한 일자 (숫자)
-  const [pickTarget, setPickTarget] = useState(null); // 수정할 결제 (카테고리·메모)
+  const [view, setView] = useState('list');          // 'list' | 'cal' | 'stat'
+  const [selDay, setSelDay] = useState(null);        // 달력에서 선택한 일자
+  const [search, setSearch] = useState('');
+  const [filterCat, setFilterCat] = useState(null);  // null=전체
+  const [pickTarget, setPickTarget] = useState(null); // 수정할 기록
   const [editCat, setEditCat] = useState('etc');
   const [editMemo, setEditMemo] = useState('');
-  const [adding, setAdding] = useState(false);        // 직접 추가 모달
+  const [adding, setAdding] = useState(false);
+  const [addType, setAddType] = useState('expense'); // 'expense' | 'income'
   const [addName, setAddName] = useState('');
   const [addAmt, setAddAmt] = useState('');
   const [addCat, setAddCat] = useState('food');
   const [showDeleted, setShowDeleted] = useState(false);
+  const [budgetOpen, setBudgetOpen] = useState(false);
+  const [budgetDraft, setBudgetDraft] = useState({ total: '', cats: {} });
 
   const load = useCallback(async () => {
-    const [p, st] = await Promise.all([
-      getPayments(), RNAndroidNotificationListener.getPermissionStatus(),
+    const [p, b, st] = await Promise.all([
+      getPayments(), getBudgets(), RNAndroidNotificationListener.getPermissionStatus(),
     ]);
-    setPayments(p); setPerm(st);
+    setPayments(p); setBudgets(b); setPerm(st);
   }, []);
 
   useEffect(() => {
@@ -88,27 +99,37 @@ export default function App() {
   // ── 보고 있는 달 데이터 ──
   const now = new Date();
   const viewYM = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+  const isThisMonth = monthOffset === 0;
+  const todayDate = now.getDate();
+  const daysInViewMonth = new Date(viewYM.getFullYear(), viewYM.getMonth()+1, 0).getDate();
   const inMonth = (p, ym) => {
     const d = new Date(p.ts);
     return d.getFullYear() === ym.getFullYear() && d.getMonth() === ym.getMonth();
   };
-  const monthPays = useMemo(() => payments.filter(p => !p.deleted && inMonth(p, viewYM)), [payments, monthOffset]);
+  // 지출 (삭제/수입 제외)
+  const monthPays = useMemo(() => payments.filter(p => !p.deleted && !isIncome(p) && inMonth(p, viewYM)), [payments, monthOffset]);
+  const monthIncome = useMemo(() => payments.filter(p => !p.deleted && isIncome(p) && inMonth(p, viewYM)), [payments, monthOffset]);
   const monthDeleted = useMemo(() => payments.filter(p => p.deleted && inMonth(p, viewYM)), [payments, monthOffset]);
   const total = monthPays.reduce((s, p) => s + p.amount, 0);
+  const incomeTotal = monthIncome.reduce((s, p) => s + p.amount, 0);
 
-  // 지난달 대비: 이번 달을 보고 있으면 "같은 기간(1일~오늘)" 비교, 과거 달은 한 달 전체 비교
+  // 지난달 대비: 이번 달=같은 기간(1일~오늘), 과거 달=전체
   const prevPays = useMemo(() => {
     const prevYM = new Date(viewYM.getFullYear(), viewYM.getMonth() - 1, 1);
     const sameWindow = monthOffset === 0;
     return payments.filter(p => {
-      if (p.deleted || !inMonth(p, prevYM)) return false;
+      if (p.deleted || isIncome(p) || !inMonth(p, prevYM)) return false;
       return sameWindow ? new Date(p.ts).getDate() <= now.getDate() : true;
     });
   }, [payments, monthOffset]);
   const prevTotal = prevPays.reduce((s, p) => s + p.amount, 0);
   const delta = prevTotal > 0 ? total - prevTotal : null;
 
-  // 카테고리별 합계 + 지난달 대비 (금액 큰 순)
+  // 예상 지출 (토스식): 지금 속도대로면 이번 달 얼마
+  const projected = isThisMonth && todayDate >= 2 && total > 0
+    ? Math.round(total / todayDate * daysInViewMonth) : null;
+
+  // 카테고리별 합계 + 지난달 대비
   const catRows = useMemo(() => {
     const sums = {}, prevSums = {};
     monthPays.forEach(p => { const k = CAT[p.category] ? p.category : 'etc'; sums[k] = (sums[k]||0) + p.amount; });
@@ -118,36 +139,70 @@ export default function App() {
   }, [monthPays, prevPays]);
   const maxCat = catRows.length ? catRows[0][1] : 1;
 
-  // 날짜별 그룹 (내역 뷰)
+  // 검색/필터 적용된 내역 (내역 탭)
+  const listPays = useMemo(() => {
+    const all = [...monthPays, ...monthIncome].sort((a,b) => new Date(b.ts) - new Date(a.ts));
+    return all.filter(p => {
+      if (filterCat && (isIncome(p) || (CAT[p.category] ? p.category : 'etc') !== filterCat)) return false;
+      if (search.trim() && !(p.merchant + (p.memo||'')).toLowerCase().includes(search.trim().toLowerCase())) return false;
+      return true;
+    });
+  }, [monthPays, monthIncome, search, filterCat]);
+
   const groups = useMemo(() => {
     const g = [];
-    monthPays.forEach(p => {
+    listPays.forEach(p => {
       const label = dayLabel(new Date(p.ts));
       let grp = g.find(x => x.label === label);
       if (!grp) { grp = { label, items: [] }; g.push(grp); }
       grp.items.push(p);
     });
     return g;
-  }, [monthPays]);
+  }, [listPays]);
 
-  // 달력 데이터: 일자별 합계 + 앞쪽 빈칸
+  // 달력 데이터 + 무지출 데이
   const cal = useMemo(() => {
     const y = viewYM.getFullYear(), m = viewYM.getMonth();
-    const daysInMonth = new Date(y, m + 1, 0).getDate();
     const firstDow = new Date(y, m, 1).getDay();
     const totals = {};
     monthPays.forEach(p => { const d = new Date(p.ts).getDate(); totals[d] = (totals[d]||0) + p.amount; });
+    const lastDay = isThisMonth ? todayDate : daysInViewMonth;
+    let noSpend = 0;
+    for (let d = 1; d <= lastDay; d++) if (!totals[d]) noSpend++;
     const cells = [];
     for (let i = 0; i < firstDow; i++) cells.push(null);
-    for (let d = 1; d <= daysInMonth; d++) cells.push({ d, amt: totals[d] || 0 });
+    for (let d = 1; d <= daysInViewMonth; d++) cells.push({ d, amt: totals[d] || 0 });
     while (cells.length % 7 !== 0) cells.push(null);
-    return { cells, daysInMonth };
+    return { cells, noSpend };
   }, [monthPays, monthOffset]);
 
   const selDayPays = selDay == null ? [] : monthPays
     .filter(p => new Date(p.ts).getDate() === selDay)
     .sort((a, b) => new Date(b.ts) - new Date(a.ts));
   const selDayTotal = selDayPays.reduce((s, p) => s + p.amount, 0);
+
+  // 통계: 최근 6개월 추이
+  const trend = useMemo(() => {
+    const out = [];
+    for (let i = 5; i >= 0; i--) {
+      const ym = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const sum = payments.filter(p => !p.deleted && !isIncome(p) && inMonth(p, ym)).reduce((s,p) => s+p.amount, 0);
+      out.push({ label: `${ym.getMonth()+1}월`, sum, cur: i === 0 });
+    }
+    return out;
+  }, [payments]);
+  const trendMax = Math.max(...trend.map(t => t.sum), 1);
+
+  // 통계: 고정지출 감지 (이번 달 + 지난달 같은 가맹점 & 금액 ±20%)
+  const recurring = useMemo(() => {
+    const prevYM = new Date(viewYM.getFullYear(), viewYM.getMonth() - 1, 1);
+    const cur = {}, prv = {};
+    payments.filter(p => !p.deleted && !isIncome(p) && inMonth(p, viewYM)).forEach(p => { cur[p.merchant] = (cur[p.merchant]||0) + p.amount; });
+    payments.filter(p => !p.deleted && !isIncome(p) && inMonth(p, prevYM)).forEach(p => { prv[p.merchant] = (prv[p.merchant]||0) + p.amount; });
+    return Object.entries(cur)
+      .filter(([m, v]) => prv[m] && Math.abs(v - prv[m]) / Math.max(v, prv[m]) <= 0.2)
+      .sort((a,b) => b[1]-a[1]);
+  }, [payments, monthOffset]);
 
   // ── 액션 ──
   const openEdit = useCallback((p) => {
@@ -157,7 +212,9 @@ export default function App() {
   }, []);
 
   const saveEdit = useCallback(async () => {
-    const next = await updateItem(pickTarget.id, { category: editCat, memo: editMemo.trim() });
+    const next = await updateItem(pickTarget.id, {
+      category: isIncome(pickTarget) ? undefined : editCat, memo: editMemo.trim(),
+    });
     setPayments([...next]); setPickTarget(null);
   }, [pickTarget, editCat, editMemo]);
 
@@ -166,10 +223,11 @@ export default function App() {
     if (!addName.trim() || !amount) { Alert.alert('입력 확인', '이름과 금액을 입력해주세요.'); return; }
     const next = await savePayment({
       id: `m_${Date.now()}`, ts: new Date().toISOString(),
-      merchant: addName.trim(), amount, category: addCat, app: 'manual',
+      merchant: addName.trim(), amount, app: 'manual',
+      ...(addType === 'income' ? { type: 'income', category: 'etc' } : { category: addCat }),
     });
-    setPayments(next); setAdding(false); setAddName(''); setAddAmt('');
-  }, [addName, addAmt, addCat]);
+    setPayments([...next]); setAdding(false); setAddName(''); setAddAmt('');
+  }, [addName, addAmt, addCat, addType]);
 
   const confirmDelete = useCallback((p) => {
     Alert.alert('삭제할까요?', `${p.merchant} · ${won(p.amount)}원\n아래 "삭제된 항목"에서 복원할 수 있어요.`, [
@@ -192,6 +250,45 @@ export default function App() {
     ]);
   }, []);
 
+  const openBudget = useCallback(() => {
+    setBudgetDraft({
+      total: budgets.total ? String(budgets.total) : '',
+      cats: Object.fromEntries(CATEGORIES.map(c => [c.key, budgets.cats[c.key] ? String(budgets.cats[c.key]) : ''])),
+    });
+    setBudgetOpen(true);
+  }, [budgets]);
+
+  const saveBudgetDraft = useCallback(async () => {
+    const num = v => parseInt(String(v).replace(/[^\d]/g, ''), 10) || 0;
+    const next = {
+      total: num(budgetDraft.total),
+      cats: Object.fromEntries(Object.entries(budgetDraft.cats).map(([k, v]) => [k, num(v)]).filter(([, v]) => v > 0)),
+    };
+    await saveBudgets(next);
+    setBudgets(next); setBudgetOpen(false);
+  }, [budgetDraft]);
+
+  const exportCSV = useCallback(async () => {
+    const rows = [...monthPays, ...monthIncome].sort((a,b) => new Date(a.ts) - new Date(b.ts));
+    if (rows.length === 0) { Alert.alert('내보내기', '이 달에는 기록이 없어요.'); return; }
+    const esc = v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+    const lines = ['날짜,시간,이름,금액,종류,카테고리,메모'];
+    rows.forEach(p => {
+      const d = new Date(p.ts);
+      lines.push([
+        `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`,
+        hhmm(p.ts), esc(p.merchant), p.amount,
+        isIncome(p) ? '수입' : '지출',
+        isIncome(p) ? '' : (CAT[p.category] || CAT.etc).label,
+        esc(p.memo || ''),
+      ].join(','));
+    });
+    await Share.share({
+      title: `가계부 ${viewYM.getFullYear()}-${viewYM.getMonth()+1}`,
+      message: lines.join('\n'),
+    });
+  }, [monthPays, monthIncome, monthOffset]);
+
   // 테스트: 가짜 결제 알림 흘려보기
   const testNotif = useCallback(async () => {
     const samples = [
@@ -201,16 +298,19 @@ export default function App() {
     ];
     const parsed = parsePayment(samples[Math.floor(Math.random()*samples.length)]);
     const next = await savePayment({ ...parsed, id:`test_${Date.now()}`, ts:new Date().toISOString(), app:'test' });
-    setPayments(next);
+    setPayments([...next]);
   }, []);
 
   const monthTitle = `${viewYM.getFullYear()}년 ${viewYM.getMonth()+1}월`;
-  const isThisMonth = monthOffset === 0;
-  const todayDate = now.getDate();
 
-  // 결제 행 렌더러 (내역 뷰 / 일자 상세 공용)
+  // 예산 진행률 색
+  const budgetPct = budgets.total > 0 ? Math.round(total / budgets.total * 100) : 0;
+  const budgetColor = budgetPct >= 100 ? C.red : budgetPct >= 80 ? C.gold : C.green;
+
+  // 결제 행 렌더러 (내역/일자상세 공용)
   const renderItem = (p, fromDaySheet) => {
-    const cat = CAT[p.category] || CAT.etc;
+    const inc = isIncome(p);
+    const cat = inc ? { label: '수입', color: C.green } : (CAT[p.category] || CAT.etc);
     return (
       <TouchableOpacity key={p.id} style={s.item} activeOpacity={0.6}
         onPress={() => { if (fromDaySheet) setSelDay(null); openEdit(p); }}
@@ -223,7 +323,7 @@ export default function App() {
           <Text style={s.itemSub}>{hhmm(p.ts)} · {srcName(p.app)} · {cat.label}</Text>
           {!!p.memo && <Text style={s.itemMemo} numberOfLines={2}>{p.memo}</Text>}
         </View>
-        <Text style={s.itemAmt}>{won(p.amount)}원</Text>
+        <Text style={[s.itemAmt, inc && { color: C.green }]}>{inc ? '+' : ''}{won(p.amount)}원</Text>
       </TouchableOpacity>
     );
   };
@@ -231,7 +331,7 @@ export default function App() {
   return (
     <SafeAreaView style={s.root}>
       <StatusBar style="light" />
-      <ScrollView contentContainerStyle={s.scroll}
+      <ScrollView contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled"
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.sub} />}>
 
         <View style={s.topRow}>
@@ -239,7 +339,6 @@ export default function App() {
           <Text style={s.appSub}>은성의 가계부 · {REV}</Text>
         </View>
 
-        {/* 권한 배너 */}
         {perm !== 'authorized' && (
           <TouchableOpacity style={s.permBanner} activeOpacity={0.85}
             onPress={() => RNAndroidNotificationListener.requestPermission()}>
@@ -275,8 +374,14 @@ export default function App() {
               <Text style={[s.navT, isThisMonth && { opacity: 0.25 }]}>›</Text>
             </TouchableOpacity>
           </View>
-          <Text style={s.totalLabel}>{isThisMonth ? '이번 달 쓴 돈' : '이 달에 쓴 돈'}</Text>
+          <View style={s.totalRow}>
+            <Text style={s.totalLabel}>{isThisMonth ? '이번 달 쓴 돈' : '이 달에 쓴 돈'}</Text>
+            <TouchableOpacity onPress={openBudget} hitSlop={8}>
+              <Text style={s.budgetLink}>예산 설정 ›</Text>
+            </TouchableOpacity>
+          </View>
           <Text style={s.total}>{won(total)}원</Text>
+          {incomeTotal > 0 && <Text style={s.incomeLine}>수입 +{won(incomeTotal)}원</Text>}
           {delta !== null && (
             <View style={s.deltaPill}>
               <Text style={[s.deltaT, { color: delta <= 0 ? C.blueText : C.red }]}>
@@ -284,54 +389,104 @@ export default function App() {
               </Text>
             </View>
           )}
+          {projected !== null && (
+            <Text style={[s.projLine, budgets.total > 0 && projected > budgets.total && { color: C.red }]}>
+              이대로면 이번 달 약 {won(projected)}원 쓸 것 같아요{budgets.total > 0 && projected > budgets.total ? ' (예산 초과 예상!)' : ''}
+            </Text>
+          )}
 
-          {/* 카테고리 바 + 지난달 대비 */}
+          {/* 예산 진행률 */}
+          {budgets.total > 0 && isThisMonth && (
+            <View style={{ marginTop: 12 }}>
+              <View style={s.budBarBg}>
+                <View style={[s.budBarFill, { width: `${Math.min(100, budgetPct)}%`, backgroundColor: budgetColor }]} />
+              </View>
+              <Text style={s.budText}>
+                예산 {won(budgets.total)}원 · {budgetPct}% 사용 ·{' '}
+                <Text style={{ color: budgetColor, fontWeight: '700' }}>
+                  {total <= budgets.total ? won(budgets.total - total) + '원 남음' : won(total - budgets.total) + '원 초과!'}
+                </Text>
+              </Text>
+            </View>
+          )}
+
+          {/* 카테고리 바 */}
           {catRows.length > 0 && (
             <View style={{ marginTop: 18, gap: 12 }}>
-              {catRows.map(([k, v, d]) => (
-                <View key={k} style={s.catRow}>
-                  <Text style={s.catName}>{CAT[k].label}</Text>
-                  <View style={s.catBar}>
-                    <View style={[s.catFill, { width: `${Math.max(5, v/maxCat*100)}%`, backgroundColor: CAT[k].color }]} />
+              {catRows.map(([k, v, d]) => {
+                const cb = budgets.cats[k];
+                const cbPct = cb ? Math.round(v / cb * 100) : null;
+                const cbColor = cbPct == null ? null : cbPct >= 100 ? C.red : cbPct >= 80 ? C.gold : C.faint;
+                return (
+                  <View key={k} style={s.catRow}>
+                    <Text style={s.catName}>{CAT[k].label}</Text>
+                    <View style={s.catBar}>
+                      <View style={[s.catFill, { width: `${Math.max(5, v/maxCat*100)}%`, backgroundColor: CAT[k].color }]} />
+                    </View>
+                    <View style={s.catAmtCol}>
+                      <Text style={s.catAmt}>{won(v)}원</Text>
+                      {cbPct != null ? (
+                        <Text style={[s.catDelta, { color: cbColor }]}>예산의 {cbPct}%</Text>
+                      ) : (d !== null && d !== 0 && (
+                        <Text style={[s.catDelta, { color: d < 0 ? C.blueText : C.red }]}>
+                          {d < 0 ? '▼' : '▲'} {fmtShort(Math.abs(d))}
+                        </Text>
+                      ))}
+                    </View>
                   </View>
-                  <View style={s.catAmtCol}>
-                    <Text style={s.catAmt}>{won(v)}원</Text>
-                    {d !== null && d !== 0 && (
-                      <Text style={[s.catDelta, { color: d < 0 ? C.blueText : C.red }]}>
-                        {d < 0 ? '▼' : '▲'} {fmtShort(Math.abs(d))}
-                      </Text>
-                    )}
-                  </View>
-                </View>
-              ))}
+                );
+              })}
             </View>
           )}
         </View>
 
         {/* 뷰 전환 탭 */}
         <View style={s.tabs}>
-          <TouchableOpacity style={[s.tab, view === 'list' && s.tabOn]} onPress={() => setView('list')}>
-            <Text style={[s.tabT, view === 'list' && s.tabTOn]}>내역</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[s.tab, view === 'cal' && s.tabOn]} onPress={() => setView('cal')}>
-            <Text style={[s.tabT, view === 'cal' && s.tabTOn]}>달력</Text>
-          </TouchableOpacity>
+          {[['list','내역'],['cal','달력'],['stat','통계']].map(([k, label]) => (
+            <TouchableOpacity key={k} style={[s.tab, view === k && s.tabOn]} onPress={() => setView(k)}>
+              <Text style={[s.tabT, view === k && s.tabTOn]}>{label}</Text>
+            </TouchableOpacity>
+          ))}
         </View>
 
-        {/* 내역 뷰: 날짜별 묶음 카드 */}
-        {view === 'list' && groups.map(g => (
-          <View key={g.label} style={s.dayCard}>
-            <View style={s.dayHead}>
-              <Text style={s.dayHeadT}>{g.label}</Text>
-              <Text style={s.dayHeadT}>{won(g.items.reduce((s2,x)=>s2+x.amount,0))}원</Text>
-            </View>
-            {g.items.map(p => renderItem(p, false))}
-          </View>
-        ))}
+        {/* ── 내역 뷰 ── */}
+        {view === 'list' && (
+          <>
+            <TextInput style={s.searchInput} placeholder="🔍 가게 이름이나 메모 검색" placeholderTextColor={C.faint}
+              value={search} onChangeText={setSearch} />
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.filterRow} keyboardShouldPersistTaps="handled">
+              <TouchableOpacity style={[s.filterChip, !filterCat && s.filterChipOn]} onPress={() => setFilterCat(null)}>
+                <Text style={[s.filterChipT, !filterCat && { color: C.text }]}>전체</Text>
+              </TouchableOpacity>
+              {CATEGORIES.map(c => (
+                <TouchableOpacity key={c.key} style={[s.filterChip, filterCat === c.key && s.filterChipOn]}
+                  onPress={() => setFilterCat(filterCat === c.key ? null : c.key)}>
+                  <View style={[s.chipDot, { backgroundColor: c.color }]} />
+                  <Text style={[s.filterChipT, filterCat === c.key && { color: C.text }]}>{c.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+            {groups.map(g => (
+              <View key={g.label} style={s.dayCard}>
+                <View style={s.dayHead}>
+                  <Text style={s.dayHeadT}>{g.label}</Text>
+                  <Text style={s.dayHeadT}>{won(g.items.filter(x => !isIncome(x)).reduce((s2,x)=>s2+x.amount,0))}원</Text>
+                </View>
+                {g.items.map(p => renderItem(p, false))}
+              </View>
+            ))}
+            {listPays.length === 0 && (
+              <Text style={s.empty}>{search || filterCat ? '조건에 맞는 기록이 없어요.' : '아직 이 달 기록이 없어요.\n카드 결제 알림이 오면 자동으로 쌓이고,\n현금은 아래 + 버튼으로 직접 추가할 수 있어요.'}</Text>
+            )}
+          </>
+        )}
 
-        {/* 달력 뷰 */}
+        {/* ── 달력 뷰 ── */}
         {view === 'cal' && (
           <View style={s.calCard}>
+            {isThisMonth && cal.noSpend > 0 && (
+              <Text style={s.noSpendLine}>🎉 이번 달 무지출 <Text style={{ color: C.green, fontWeight: '800' }}>{cal.noSpend}일</Text></Text>
+            )}
             <View style={s.calHead}>
               {DAY_NAMES.map((d, i) => (
                 <Text key={d} style={[s.calDow, i === 0 && { color: '#C96A6A' }, i === 6 && { color: '#6A8FC9' }]}>{d}</Text>
@@ -343,6 +498,7 @@ export default function App() {
                   if (!cell) return <View key={i} style={s.calCell} />;
                   const isToday = isThisMonth && cell.d === todayDate;
                   const isFuture = isThisMonth && cell.d > todayDate;
+                  const noSpendDay = !isFuture && !cell.amt;
                   return (
                     <TouchableOpacity key={i} style={[s.calCell, selDay === cell.d && s.calCellOn]}
                       activeOpacity={0.6} disabled={isFuture}
@@ -350,22 +506,76 @@ export default function App() {
                       <View style={[s.calDayWrap, isToday && s.calToday]}>
                         <Text style={[s.calDay, isToday && { color: '#fff' }, isFuture && { color: '#3A3A42' }]}>{cell.d}</Text>
                       </View>
-                      <Text style={s.calAmt} numberOfLines={1}>{cell.amt ? fmtShort(cell.amt) : ' '}</Text>
+                      <Text style={[s.calAmt, noSpendDay && { color: C.green }]} numberOfLines={1}>
+                        {cell.amt ? fmtShort(cell.amt) : noSpendDay ? '✓' : ' '}
+                      </Text>
                     </TouchableOpacity>
                   );
                 })}
               </View>
             ))}
-            <Text style={s.calHint}>날짜를 누르면 그날 쓴 내역이 보여요</Text>
+            <Text style={s.calHint}>날짜를 누르면 그날 쓴 내역이 보여요 · ✓ = 무지출</Text>
           </View>
         )}
 
-        {monthPays.length === 0 && (
-          <Text style={s.empty}>아직 이 달 기록이 없어요.{'\n'}카드 결제 알림이 오면 자동으로 쌓이고,{'\n'}현금은 아래 + 버튼으로 직접 추가할 수 있어요.</Text>
+        {/* ── 통계 뷰 ── */}
+        {view === 'stat' && (
+          <>
+            <View style={s.statCard}>
+              <Text style={s.statTitle}>최근 6개월 지출</Text>
+              <View style={s.trendRow}>
+                {trend.map(t => (
+                  <View key={t.label} style={s.trendCol}>
+                    <Text style={s.trendAmt}>{t.sum ? fmtShort(t.sum) : ''}</Text>
+                    <View style={[s.trendBar, {
+                      height: Math.max(4, t.sum / trendMax * 90),
+                      backgroundColor: t.cur ? C.blue : C.card2,
+                    }]} />
+                    <Text style={[s.trendLabel, t.cur && { color: C.text, fontWeight: '700' }]}>{t.label}</Text>
+                  </View>
+                ))}
+              </View>
+            </View>
+
+            <View style={s.statCard}>
+              <Text style={s.statTitle}>매달 나가는 돈 (고정지출·구독)</Text>
+              {recurring.length > 0 ? (
+                <>
+                  {recurring.map(([m, v]) => (
+                    <View key={m} style={s.recurRow}>
+                      <Text style={s.recurName} numberOfLines={1}>{m}</Text>
+                      <Text style={s.recurAmt}>{won(v)}원</Text>
+                    </View>
+                  ))}
+                  <View style={[s.recurRow, { borderTopWidth: 1, borderTopColor: C.card2, paddingTop: 10, marginTop: 4 }]}>
+                    <Text style={[s.recurName, { color: C.sub }]}>합계</Text>
+                    <Text style={[s.recurAmt, { color: C.blueText }]}>{won(recurring.reduce((s2,[,v])=>s2+v,0))}원</Text>
+                  </View>
+                </>
+              ) : (
+                <Text style={s.statEmpty}>지난달과 이번 달에 같은 곳에서 비슷한 금액이 나가면{'\n'}자동으로 여기에 잡혀요 (2개월치 데이터 필요)</Text>
+              )}
+            </View>
+
+            <View style={s.statCard}>
+              <Text style={s.statTitle}>{viewYM.getMonth()+1}월 수입 vs 지출</Text>
+              <View style={s.recurRow}><Text style={s.recurName}>수입</Text><Text style={[s.recurAmt, { color: C.green }]}>+{won(incomeTotal)}원</Text></View>
+              <View style={s.recurRow}><Text style={s.recurName}>지출</Text><Text style={s.recurAmt}>-{won(total)}원</Text></View>
+              <View style={[s.recurRow, { borderTopWidth: 1, borderTopColor: C.card2, paddingTop: 10, marginTop: 4 }]}>
+                <Text style={[s.recurName, { color: C.sub }]}>남은 돈</Text>
+                <Text style={[s.recurAmt, { color: incomeTotal - total >= 0 ? C.green : C.red }]}>{won(incomeTotal - total)}원</Text>
+              </View>
+              <Text style={s.statEmpty}>수입은 + 버튼에서 "수입" 탭으로 기록해요</Text>
+            </View>
+
+            <TouchableOpacity style={s.exportBtn} activeOpacity={0.8} onPress={exportCSV}>
+              <Text style={s.exportBtnT}>📤 {viewYM.getMonth()+1}월 기록 내보내기 (CSV)</Text>
+            </TouchableOpacity>
+          </>
         )}
 
         {/* 삭제된 항목 (복원 가능) */}
-        {monthDeleted.length > 0 && (
+        {view === 'list' && monthDeleted.length > 0 && (
           <View style={s.dayCard}>
             <TouchableOpacity style={s.dayHead} activeOpacity={0.6} onPress={() => setShowDeleted(v => !v)}>
               <Text style={s.dayHeadT}>🗑 삭제된 항목 {monthDeleted.length}건</Text>
@@ -398,7 +608,7 @@ export default function App() {
           <TouchableOpacity style={s.testBtn} onPress={testNotif} activeOpacity={0.7}>
             <Text style={s.testBtnT}>동작 테스트 (가짜 결제 1건 추가)</Text>
           </TouchableOpacity>
-          <Text style={s.hint}>내역을 누르면 카테고리 변경 · 길게 누르면 삭제{'\n'}설정 → 배터리 → 클린페이 → "제한 없음" 권장</Text>
+          <Text style={s.hint}>내역을 누르면 수정 · 길게 누르면 삭제{'\n'}설정 → 배터리 → 클린페이 → "제한 없음" 권장</Text>
           {!SUPABASE_URL && (
             <Text style={s.hint}>src/config.js에 Supabase 주소를 넣으면 여자친구가 웹으로 조회할 수 있어요</Text>
           )}
@@ -406,7 +616,7 @@ export default function App() {
       </ScrollView>
 
       {/* + 직접 추가 버튼 */}
-      <TouchableOpacity style={s.fab} activeOpacity={0.8} onPress={() => { setAddCat('food'); setAdding(true); }}>
+      <TouchableOpacity style={s.fab} activeOpacity={0.8} onPress={() => { setAddType('expense'); setAddCat('food'); setAdding(true); }}>
         <Text style={s.fabT}>＋</Text>
       </TouchableOpacity>
 
@@ -430,17 +640,19 @@ export default function App() {
           <View style={s.modalCard} onStartShouldSetResponder={() => true}>
             <View style={s.grabber} />
             <Text style={s.modalTitle}>{pickTarget?.merchant}</Text>
-            <Text style={s.modalSub}>{pickTarget ? won(pickTarget.amount) + '원' : ''} — 카테고리를 바꾸면 이 가맹점은 그걸로 기억해요</Text>
-            <View style={s.catGrid}>
-              {CATEGORIES.map(c => (
-                <TouchableOpacity key={c.key} activeOpacity={0.7}
-                  style={[s.catBtn, editCat === c.key && s.catBtnOn]}
-                  onPress={() => setEditCat(c.key)}>
-                  <View style={[s.catBtnDot, { backgroundColor: c.color }]} />
-                  <Text style={[s.catBtnT, editCat === c.key && { color: C.text }]}>{c.label}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+            <Text style={s.modalSub}>{pickTarget ? won(pickTarget.amount) + '원' : ''}{pickTarget && !isIncome(pickTarget) ? ' — 카테고리를 바꾸면 이 가맹점은 그걸로 기억해요' : ''}</Text>
+            {pickTarget && !isIncome(pickTarget) && (
+              <View style={s.catGrid}>
+                {CATEGORIES.map(c => (
+                  <TouchableOpacity key={c.key} activeOpacity={0.7}
+                    style={[s.catBtn, editCat === c.key && s.catBtnOn]}
+                    onPress={() => setEditCat(c.key)}>
+                    <View style={[s.catBtnDot, { backgroundColor: c.color }]} />
+                    <Text style={[s.catBtnT, editCat === c.key && { color: C.text }]}>{c.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
             <TextInput style={s.input} placeholder="메모 (예: 친구랑 점심, 회사 경비 처리)" placeholderTextColor={C.faint}
               value={editMemo} onChangeText={setEditMemo} />
             <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={saveEdit}>
@@ -450,29 +662,67 @@ export default function App() {
         </TouchableOpacity>
       </Modal>
 
-      {/* 직접 추가 모달 */}
+      {/* 직접 추가 모달 (지출/수입) */}
       <Modal visible={adding} transparent animationType="slide" onRequestClose={() => setAdding(false)}>
         <TouchableOpacity style={s.modalBg} activeOpacity={1} onPress={() => setAdding(false)}>
           <View style={s.modalCard} onStartShouldSetResponder={() => true}>
             <View style={s.grabber} />
-            <Text style={s.modalTitle}>지출 직접 추가</Text>
-            <Text style={s.modalSub}>현금이나 계좌이체로 쓴 돈을 기록해요</Text>
-            <View style={s.catGrid}>
-              {CATEGORIES.map(c => (
-                <TouchableOpacity key={c.key} activeOpacity={0.7}
-                  style={[s.catBtn, addCat === c.key && s.catBtnOn]}
-                  onPress={() => setAddCat(c.key)}>
-                  <View style={[s.catBtnDot, { backgroundColor: c.color }]} />
-                  <Text style={[s.catBtnT, addCat === c.key && { color: C.text }]}>{c.label}</Text>
-                </TouchableOpacity>
-              ))}
+            <Text style={s.modalTitle}>직접 추가</Text>
+            <View style={[s.tabs, { marginTop: 10, marginBottom: 14 }]}>
+              <TouchableOpacity style={[s.tab, addType === 'expense' && s.tabOn]} onPress={() => setAddType('expense')}>
+                <Text style={[s.tabT, addType === 'expense' && s.tabTOn]}>지출</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[s.tab, addType === 'income' && s.tabOn]} onPress={() => setAddType('income')}>
+                <Text style={[s.tabT, addType === 'income' && { color: C.green }]}>수입</Text>
+              </TouchableOpacity>
             </View>
-            <TextInput style={s.input} placeholder="어디서 썼나요? (예: 김밥천국)" placeholderTextColor={C.faint}
-              value={addName} onChangeText={setAddName} />
+            {addType === 'expense' && (
+              <View style={s.catGrid}>
+                {CATEGORIES.map(c => (
+                  <TouchableOpacity key={c.key} activeOpacity={0.7}
+                    style={[s.catBtn, addCat === c.key && s.catBtnOn]}
+                    onPress={() => setAddCat(c.key)}>
+                    <View style={[s.catBtnDot, { backgroundColor: c.color }]} />
+                    <Text style={[s.catBtnT, addCat === c.key && { color: C.text }]}>{c.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+            <TextInput style={s.input}
+              placeholder={addType === 'expense' ? '어디서 썼나요? (예: 김밥천국)' : '어디서 들어왔나요? (예: 월급)'}
+              placeholderTextColor={C.faint} value={addName} onChangeText={setAddName} />
             <TextInput style={s.input} placeholder="금액 (원)" placeholderTextColor={C.faint}
               keyboardType="number-pad" value={addAmt} onChangeText={setAddAmt} />
-            <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={addManual}>
+            <TouchableOpacity style={[s.bigBtn, addType === 'income' && { backgroundColor: C.green }]} activeOpacity={0.85} onPress={addManual}>
               <Text style={s.bigBtnT}>추가하기</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* 예산 설정 모달 */}
+      <Modal visible={budgetOpen} transparent animationType="slide" onRequestClose={() => setBudgetOpen(false)}>
+        <TouchableOpacity style={s.modalBg} activeOpacity={1} onPress={() => setBudgetOpen(false)}>
+          <View style={s.modalCard} onStartShouldSetResponder={() => true}>
+            <View style={s.grabber} />
+            <Text style={s.modalTitle}>월 예산 설정</Text>
+            <Text style={s.modalSub}>비워두면 예산 없이 사용해요. 카테고리 예산은 선택사항.</Text>
+            <ScrollView style={{ maxHeight: 380 }} keyboardShouldPersistTaps="handled">
+              <Text style={s.budLabel}>전체 월 예산</Text>
+              <TextInput style={s.input} placeholder="예: 500000" placeholderTextColor={C.faint}
+                keyboardType="number-pad" value={budgetDraft.total}
+                onChangeText={v => setBudgetDraft(d => ({ ...d, total: v }))} />
+              {CATEGORIES.map(c => (
+                <View key={c.key}>
+                  <Text style={s.budLabel}>{c.label}</Text>
+                  <TextInput style={s.input} placeholder="비워두면 미설정" placeholderTextColor={C.faint}
+                    keyboardType="number-pad" value={budgetDraft.cats[c.key] || ''}
+                    onChangeText={v => setBudgetDraft(d => ({ ...d, cats: { ...d.cats, [c.key]: v } }))} />
+                </View>
+              ))}
+            </ScrollView>
+            <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={saveBudgetDraft}>
+              <Text style={s.bigBtnT}>저장</Text>
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
@@ -502,16 +752,25 @@ const s = StyleSheet.create({
   navBtn: { paddingHorizontal: 6 },
   navT: { color: C.faint, fontSize: 22, fontWeight: '600', marginTop: -3 },
   monthTitle: { color: C.sub, fontWeight: '600', fontSize: 14 },
+  totalRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   totalLabel: { color: C.sub, fontSize: 14 },
+  budgetLink: { color: C.faint, fontSize: 13, fontWeight: '600' },
   total: { color: C.text, fontSize: 34, fontWeight: '800', marginTop: 2, letterSpacing: -1 },
+  incomeLine: { color: C.green, fontSize: 13, fontWeight: '700', marginTop: 3 },
   deltaPill: { alignSelf: 'flex-start', backgroundColor: C.card2, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 5, marginTop: 10 },
   deltaT: { fontSize: 13, fontWeight: '700' },
+  projLine: { color: C.faint, fontSize: 12.5, marginTop: 8 },
+
+  budBarBg: { height: 8, borderRadius: 4, backgroundColor: C.card2, overflow: 'hidden' },
+  budBarFill: { height: '100%', borderRadius: 4 },
+  budText: { color: C.faint, fontSize: 12, marginTop: 6 },
+  budLabel: { color: C.sub, fontSize: 13, fontWeight: '600', marginTop: 12 },
 
   catRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   catName: { color: C.sub, fontSize: 14, width: 66 },
   catBar: { flex: 1, height: 7, borderRadius: 4, backgroundColor: C.card2, overflow: 'hidden' },
   catFill: { height: '100%', borderRadius: 4 },
-  catAmtCol: { width: 86, alignItems: 'flex-end' },
+  catAmtCol: { width: 90, alignItems: 'flex-end' },
   catAmt: { color: C.text, fontSize: 14, fontWeight: '600', letterSpacing: -0.3 },
   catDelta: { fontSize: 10.5, fontWeight: '700', marginTop: 1 },
 
@@ -520,6 +779,13 @@ const s = StyleSheet.create({
   tabOn: { backgroundColor: C.card2 },
   tabT: { color: C.faint, fontSize: 13.5, fontWeight: '700' },
   tabTOn: { color: C.text },
+
+  searchInput: { backgroundColor: C.card, borderRadius: 14, color: C.text, paddingHorizontal: 16, paddingVertical: 12, fontSize: 14.5, marginBottom: 10 },
+  filterRow: { marginBottom: 12, flexGrow: 0 },
+  filterChip: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: C.card, borderRadius: 99, paddingHorizontal: 13, paddingVertical: 8, marginRight: 8 },
+  filterChipOn: { backgroundColor: C.card2 },
+  filterChipT: { color: C.faint, fontSize: 13, fontWeight: '700' },
+  chipDot: { width: 8, height: 8, borderRadius: 99 },
 
   dayCard: { backgroundColor: C.card, borderRadius: 20, paddingHorizontal: 18, paddingVertical: 8, marginBottom: 12 },
   dayHead: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 12 },
@@ -533,6 +799,7 @@ const s = StyleSheet.create({
   itemMemo: { color: C.gold, fontSize: 12.5, marginTop: 3, lineHeight: 17 },
 
   calCard: { backgroundColor: C.card, borderRadius: 20, padding: 14, paddingBottom: 10, marginBottom: 12 },
+  noSpendLine: { color: C.sub, fontSize: 13, fontWeight: '600', textAlign: 'center', marginBottom: 10 },
   calHead: { flexDirection: 'row', marginBottom: 6 },
   calDow: { flex: 1, textAlign: 'center', color: C.faint, fontSize: 12, fontWeight: '600' },
   calRow: { flexDirection: 'row' },
@@ -543,6 +810,20 @@ const s = StyleSheet.create({
   calDay: { color: C.text, fontSize: 13.5, fontWeight: '600' },
   calAmt: { color: C.sub, fontSize: 9.5, fontWeight: '600', marginTop: 1, minHeight: 12 },
   calHint: { color: C.faint, fontSize: 11.5, textAlign: 'center', marginTop: 8, marginBottom: 4 },
+
+  statCard: { backgroundColor: C.card, borderRadius: 20, padding: 18, marginBottom: 12 },
+  statTitle: { color: C.text, fontSize: 15, fontWeight: '800', marginBottom: 14, letterSpacing: -0.3 },
+  trendRow: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', height: 130 },
+  trendCol: { flex: 1, alignItems: 'center', justifyContent: 'flex-end', gap: 5 },
+  trendAmt: { color: C.sub, fontSize: 10, fontWeight: '600' },
+  trendBar: { width: 26, borderRadius: 6 },
+  trendLabel: { color: C.faint, fontSize: 11.5 },
+  recurRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 7 },
+  recurName: { color: C.text, fontSize: 14, flex: 1, marginRight: 10 },
+  recurAmt: { color: C.text, fontSize: 14, fontWeight: '700' },
+  statEmpty: { color: C.faint, fontSize: 12.5, lineHeight: 18, textAlign: 'center', paddingVertical: 8 },
+  exportBtn: { backgroundColor: C.card, borderRadius: 14, padding: 15, alignItems: 'center', marginBottom: 12 },
+  exportBtnT: { color: C.sub, fontWeight: '700', fontSize: 13.5 },
 
   daySheetTotal: { color: C.text, fontSize: 28, fontWeight: '800', letterSpacing: -0.8, marginTop: 2, marginBottom: 10 },
   emptySmall: { color: C.sub, fontSize: 14, textAlign: 'center', paddingVertical: 22 },
