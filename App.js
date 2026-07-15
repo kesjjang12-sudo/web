@@ -9,6 +9,7 @@ import {
   getPayments, savePayment, updateItem, deletePayment, restorePayment, purgePayment,
   syncAll, getBudgets, saveBudgets,
   getDiary, addDiary, deleteDiary, getQuitSettings, saveQuitSettings,
+  getExplanations, saveExplanation, fetchCheers, deleteCheer,
 } from './src/store';
 import { parsePayment } from './src/parser';
 import { QUIT_GOALS, CATEGORIES, SHOP_ITEMS, SUPABASE_URL } from './src/config';
@@ -19,7 +20,29 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r11'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r12'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const LOCK_LIMIT = 100000;   // 하루 이만큼 넘게 쓰면 소명 요청
+const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
+// 건강 회복 타임라인 (일 기준)
+const HEALTH_SOBER = [
+  { d: 1,   t: '혈당이 안정되기 시작해요' },
+  { d: 3,   t: '수면의 질이 좋아지기 시작해요' },
+  { d: 7,   t: '몸의 수분 균형이 돌아와요' },
+  { d: 14,  t: '간에 쌓인 지방이 줄기 시작해요' },
+  { d: 30,  t: '간 기능 회복, 피부가 맑아져요' },
+  { d: 90,  t: '혈압이 개선돼요' },
+  { d: 365, t: '간 질환 위험이 크게 줄어요' },
+];
+const HEALTH_SMOKE = [
+  { d: 1,   t: '심박수와 혈압이 정상으로 돌아와요' },
+  { d: 2,   t: '미각과 후각이 되살아나요' },
+  { d: 3,   t: '호흡이 한결 편해져요' },
+  { d: 14,  t: '혈액순환과 폐 기능이 좋아지기 시작해요' },
+  { d: 30,  t: '피부가 좋아지고 기침이 줄어요' },
+  { d: 90,  t: '폐 기능이 최대 30% 회복돼요' },
+  { d: 365, t: '심장병 위험이 절반으로 줄어요' },
+];
+const dkey = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 const CAT = Object.fromEntries(CATEGORIES.map(c => [c.key, c]));
 const won = n => n.toLocaleString('ko-KR');
 const DAY_NAMES = ['일','월','화','수','목','금','토'];
@@ -83,13 +106,20 @@ export default function App() {
   const [quitSet, setQuitSet] = useState({ soberPerDay: 15000, cigsPerDay: 10, packPrice: 4500 });
   const [quitEdit, setQuitEdit] = useState(false);
   const [quitDraft, setQuitDraft] = useState({ soberPerDay: '', cigsPerDay: '', packPrice: '' });
+  const [explanations, setExplanations] = useState({});
+  const [explainText, setExplainText] = useState('');
+  const [cheers, setCheers] = useState([]);
+  const [crisisOpen, setCrisisOpen] = useState(false);
+  const [crisisEntry, setCrisisEntry] = useState(null);
 
   const load = useCallback(async () => {
-    const [p, b, d, q, st] = await Promise.all([
+    const [p, b, d, q, ex, ch, st] = await Promise.all([
       getPayments(), getBudgets(), getDiary(), getQuitSettings(),
+      getExplanations(), fetchCheers(),
       RNAndroidNotificationListener.getPermissionStatus(),
     ]);
-    setPayments(p); setBudgets(b); setDiary(d); setQuitSet(q); setPerm(st);
+    setPayments(p); setBudgets(b); setDiary(d); setQuitSet(q);
+    setExplanations(ex); setCheers(ch); setPerm(st);
   }, []);
 
   useEffect(() => {
@@ -297,6 +327,81 @@ export default function App() {
     });
   }, [monthPays, monthIncome, monthOffset]);
 
+  // ── 소명 잠금: 최근 14일 중 하루 10만원 이상인데 소명 안 한 날 ──
+  const lockTarget = useMemo(() => {
+    const totals = {}, itemsByDay = {};
+    payments.forEach(p => {
+      if (p.deleted || isIncome(p)) return;
+      const d = new Date(p.ts);
+      const diff = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
+      if (diff < 0 || diff > 14) return;
+      const k = dkey(d);
+      totals[k] = (totals[k]||0) + p.amount;
+      (itemsByDay[k] = itemsByDay[k] || []).push(p);
+    });
+    const bad = Object.entries(totals)
+      .filter(([k, v]) => v >= LOCK_LIMIT && !explanations[k])
+      .sort((a, b) => a[0] < b[0] ? -1 : 1);
+    if (!bad.length) return null;
+    const [k, v] = bad[0];
+    const d = new Date(k);
+    return { key: k, label: `${d.getMonth()+1}월 ${d.getDate()}일`, total: v, items: itemsByDay[k].sort((a,b)=>b.amount-a.amount) };
+  }, [payments, explanations]);
+
+  const submitExplanation = useCallback(async () => {
+    if (explainText.trim().length < 5) { Alert.alert('소명 부족', '5자 이상 성의있게 써주세요 😤'); return; }
+    setExplanations({ ...await saveExplanation(lockTarget.key, explainText.trim()) });
+    setExplainText('');
+  }, [lockTarget, explainText]);
+
+  // ── 주간 인사이트: 최근 7일 vs 그 전 3주 평균 ──
+  const insight = useMemo(() => {
+    const sumRange = (from, to, byCat) => { // from/to: 일수 전 (from > to)
+      const out = byCat ? {} : { total: 0 };
+      payments.forEach(p => {
+        if (p.deleted || isIncome(p)) return;
+        const d = new Date(p.ts);
+        const diff = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
+        if (diff > from || diff < to) return;
+        if (byCat) { const k = CAT[p.category] ? p.category : 'etc'; out[k] = (out[k]||0) + p.amount; }
+        else out.total += p.amount;
+      });
+      return out;
+    };
+    const thisWeek = sumRange(6, 0, true);
+    const prev = [sumRange(13, 7, true), sumRange(20, 14, true), sumRange(27, 21, true)];
+    let best = null;
+    for (const k of Object.keys(thisWeek)) {
+      const avg = prev.reduce((s, w) => s + (w[k]||0), 0) / 3;
+      if (avg < 5000) continue; // 비교할 데이터 부족
+      const pct = Math.round((thisWeek[k] - avg) / avg * 100);
+      if (Math.abs(pct) >= 30 && Math.abs(thisWeek[k] - avg) >= 10000) {
+        if (!best || Math.abs(pct) > Math.abs(best.pct)) best = { cat: k, pct, cur: thisWeek[k] };
+      }
+    }
+    return best;
+  }, [payments]);
+
+  // ── 마일스톤 ──
+  const soberDaysNow = daysSince(QUIT_GOALS[0].start);
+  const smokeDaysNow = daysSince(QUIT_GOALS[1].start);
+  const milestoneToday = [];
+  if (MILESTONES.includes(soberDaysNow)) milestoneToday.push(`금주 ${soberDaysNow}일`);
+  if (MILESTONES.includes(smokeDaysNow)) milestoneToday.push(`금연 ${smokeDaysNow}일`);
+  const nextMs = MILESTONES.find(m => m > Math.min(soberDaysNow, smokeDaysNow));
+
+  const openCrisis = useCallback(() => {
+    setCrisisEntry(diary.length ? diary[Math.floor(Math.random() * diary.length)] : null);
+    setCrisisOpen(true);
+  }, [diary]);
+
+  const confirmCheerDelete = useCallback((c) => {
+    Alert.alert('응원을 삭제할까요?', '', [
+      { text: '취소', style: 'cancel' },
+      { text: '삭제', style: 'destructive', onPress: async () => { await deleteCheer(c.id); setCheers(cs => cs.filter(x => x.id !== c.id)); } },
+    ]);
+  }, []);
+
   // ── 금주·금연 아낀 돈 ──
   const soberDays = daysSince(QUIT_GOALS[0].start);
   const smokeDays = daysSince(QUIT_GOALS[1].start);
@@ -432,6 +537,14 @@ export default function App() {
           </TouchableOpacity>
         )}
 
+        {/* 마일스톤 축하 */}
+        {milestoneToday.length > 0 && (
+          <TouchableOpacity style={s.celebrate} activeOpacity={0.85} onPress={() => setScreen('save')}>
+            <Text style={s.celebrateT}>🏆 {milestoneToday.join(' · ')} 달성!</Text>
+            <Text style={s.celebrateSub}>대단해요. 지금까지 {won(savedTotal)}원 아꼈어요 → 탭해서 보기</Text>
+          </TouchableOpacity>
+        )}
+
         {/* D-day 카드 (탭 → 아낀 돈 + 일기장) */}
         <View style={s.ddayRow}>
           {QUIT_GOALS.map((g, i) => {
@@ -528,6 +641,17 @@ export default function App() {
           )}
         </View>
 
+        {/* 주간 인사이트 */}
+        {insight && (
+          <View style={[s.insightCard, { borderLeftColor: insight.pct > 0 ? C.red : C.green }]}>
+            <Text style={s.insightT}>
+              {insight.pct > 0
+                ? `📊 이번 주 ${CAT[insight.cat].label}가 평소보다 ${insight.pct}% 많아요 (${won(insight.cur)}원)`
+                : `👏 이번 주 ${CAT[insight.cat].label}를 평소보다 ${Math.abs(insight.pct)}% 아꼈어요`}
+            </Text>
+          </View>
+        )}
+
         {/* 뷰 전환 탭 */}
         <View style={s.tabs}>
           {[['list','내역'],['cal','달력'],['stat','통계']].map(([k, label]) => (
@@ -554,15 +678,21 @@ export default function App() {
                 </TouchableOpacity>
               ))}
             </ScrollView>
-            {groups.map(g => (
-              <View key={g.label} style={s.dayCard}>
-                <View style={s.dayHead}>
-                  <Text style={s.dayHeadT}>{g.label}</Text>
-                  <Text style={s.dayHeadT}>{won(g.items.filter(x => !isIncome(x)).reduce((s2,x)=>s2+x.amount,0))}원</Text>
+            {groups.map(g => {
+              const gk = dkey(new Date(g.items[0].ts));
+              return (
+                <View key={g.label} style={s.dayCard}>
+                  <View style={s.dayHead}>
+                    <Text style={s.dayHeadT}>{g.label}</Text>
+                    <Text style={s.dayHeadT}>{won(g.items.filter(x => !isIncome(x)).reduce((s2,x)=>s2+x.amount,0))}원</Text>
+                  </View>
+                  {explanations[gk] && (
+                    <Text style={s.explainLine}>📋 소명: {explanations[gk]}</Text>
+                  )}
+                  {g.items.map(p => renderItem(p, false))}
                 </View>
-                {g.items.map(p => renderItem(p, false))}
-              </View>
-            ))}
+              );
+            })}
             {listPays.length === 0 && (
               <Text style={s.empty}>{search || filterCat ? '조건에 맞는 기록이 없어요.' : '아직 이 달 기록이 없어요.\n카드 결제 알림이 오면 자동으로 쌓이고,\n현금은 아래 + 버튼으로 직접 추가할 수 있어요.'}</Text>
             )}
@@ -724,6 +854,14 @@ export default function App() {
             <Text style={s.ddaySince}>+{won(savedSmoke)}원 아낌</Text>
           </View>
         </View>
+        {nextMs && (
+          <Text style={s.savedTeaser}>다음 목표 🎯 {nextMs}일까지 <Text style={{ color: C.blueText, fontWeight: '800' }}>D-{nextMs - Math.min(soberDaysNow, smokeDaysNow)}</Text></Text>
+        )}
+
+        {/* 위기 버튼 */}
+        <TouchableOpacity style={s.crisisBtn} activeOpacity={0.85} onPress={openCrisis}>
+          <Text style={s.crisisBtnT}>😵 술·담배 땡길 때 누르는 버튼</Text>
+        </TouchableOpacity>
 
         <View style={s.statCard}>
           <View style={s.totalRow}>
@@ -779,6 +917,42 @@ export default function App() {
             );
           })}
           <Text style={s.statEmpty}>가격은 대략적인 기준이에요 · 하루하루 지날수록 올라가요 📈</Text>
+        </View>
+
+        {/* 건강 회복 타임라인 */}
+        {[['🍺 금주하면 몸이 이렇게 좋아져요', HEALTH_SOBER, soberDays], ['🚭 금연하면 몸이 이렇게 좋아져요', HEALTH_SMOKE, smokeDays]].map(([title, list, days]) => (
+          <View key={title} style={s.statCard}>
+            <Text style={s.statTitle}>{title}</Text>
+            {list.map(h => {
+              const done = days >= h.d;
+              return (
+                <View key={h.d} style={s.healthRow}>
+                  <Text style={[s.healthCheck, { color: done ? C.green : '#3A3F4A' }]}>{done ? '✓' : '○'}</Text>
+                  <Text style={[s.healthDay, done && { color: C.sub }]}>{h.d}일</Text>
+                  <Text style={[s.healthText, done && { color: C.text }]}>{h.t}</Text>
+                  {!done && <Text style={s.healthDminus}>D-{h.d - days}</Text>}
+                </View>
+              );
+            })}
+          </View>
+        ))}
+
+        {/* 받은 응원 */}
+        <View style={s.statCard}>
+          <Text style={s.statTitle}>받은 응원 💌 {cheers.length > 0 ? `(${cheers.length})` : ''}</Text>
+          {cheers.length === 0 ? (
+            <Text style={s.statEmpty}>친구들이 조회 페이지에서 응원을 남기면 여기에만 보여요.{'\n'}(페이지에는 표시되지 않아요)</Text>
+          ) : cheers.map(c => {
+            const dt = new Date(c.ts);
+            return (
+              <TouchableOpacity key={c.id} style={s.diaryRow} activeOpacity={0.7}
+                onLongPress={() => confirmCheerDelete(c)} delayLongPress={450}>
+                <Text style={s.diaryDate}>{c.name || '익명'} · {dt.getMonth()+1}월 {dt.getDate()}일</Text>
+                <Text style={s.diaryText}>{c.text}</Text>
+              </TouchableOpacity>
+            );
+          })}
+          {cheers.length > 0 && <Text style={s.statEmpty}>길게 누르면 삭제돼요</Text>}
         </View>
       </ScrollView>
       )}
@@ -931,6 +1105,61 @@ export default function App() {
         </TouchableOpacity>
       </Modal>
 
+      {/* 🚨 고액 지출 소명 모달 (소명 전까지 안 닫힘) */}
+      <Modal visible={!!lockTarget} transparent animationType="fade" onRequestClose={() => {}}>
+        <View style={s.modalBg}>
+          <View style={[s.modalCard, { borderTopWidth: 3, borderTopColor: C.red }]}>
+            <Text style={[s.modalTitle, { color: C.red }]}>🚨 소명 요청</Text>
+            <Text style={s.modalSub}>
+              {lockTarget?.label}에 {lockTarget ? won(lockTarget.total) : ''}원 썼어요 (하루 {won(LOCK_LIMIT)}원 초과).{'\n'}뭐에 썼는지 소명하기 전까지 앱이 잠겨요 🔒
+            </Text>
+            {lockTarget?.items.slice(0, 4).map(p => (
+              <View key={p.id} style={s.recurRow}>
+                <Text style={s.recurName} numberOfLines={1}>{p.merchant}</Text>
+                <Text style={s.recurAmt}>{won(p.amount)}원</Text>
+              </View>
+            ))}
+            {lockTarget && lockTarget.items.length > 4 && (
+              <Text style={s.statEmpty}>외 {lockTarget.items.length - 4}건</Text>
+            )}
+            <TextInput style={[s.input, { minHeight: 64, textAlignVertical: 'top' }]} multiline
+              placeholder="소명하세요 (예: 부모님 선물 샀음. 정당한 지출임)"
+              placeholderTextColor={C.faint} value={explainText} onChangeText={setExplainText} />
+            <TouchableOpacity style={[s.bigBtn, { backgroundColor: C.red }]} activeOpacity={0.85} onPress={submitExplanation}>
+              <Text style={s.bigBtnT}>소명 제출</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 위기 버튼 모달 */}
+      <Modal visible={crisisOpen} transparent animationType="slide" onRequestClose={() => setCrisisOpen(false)}>
+        <TouchableOpacity style={s.modalBg} activeOpacity={1} onPress={() => setCrisisOpen(false)}>
+          <View style={s.modalCard} onStartShouldSetResponder={() => true}>
+            <View style={s.grabber} />
+            <Text style={s.modalTitle}>잠깐만요 ✋</Text>
+            <Text style={s.modalSub}>지금 마시거나 피우면, 이걸 전부 리셋하는 거예요:</Text>
+            <View style={s.crisisBox}>
+              <Text style={s.crisisMoney}>{won(savedTotal)}원</Text>
+              <Text style={s.crisisMoneySub}>금주 {soberDays}일 · 금연 {smokeDays}일 동안 아낀 돈</Text>
+            </View>
+            {crisisEntry ? (
+              <View style={s.crisisBox}>
+                <Text style={s.diaryDate}>📖 {new Date(crisisEntry.ts).getMonth()+1}월 {new Date(crisisEntry.ts).getDate()}일의 내가 남긴 말</Text>
+                <Text style={s.diaryText}>"{crisisEntry.text}"</Text>
+              </View>
+            ) : (
+              <View style={s.crisisBox}>
+                <Text style={s.diaryText}>일기를 써두면 위기의 순간에 과거의 내가 나타나서 말려줘요 ✍️</Text>
+              </View>
+            )}
+            <TouchableOpacity style={[s.bigBtn, { backgroundColor: C.green }]} activeOpacity={0.85} onPress={() => setCrisisOpen(false)}>
+              <Text style={s.bigBtnT}>참는다 💪</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
       {/* 예산 설정 모달 */}
       <Modal visible={budgetOpen} transparent animationType="slide" onRequestClose={() => setBudgetOpen(false)}>
         <TouchableOpacity style={s.modalBg} activeOpacity={1} onPress={() => setBudgetOpen(false)}>
@@ -973,6 +1202,22 @@ const s = StyleSheet.create({
   diaryStatV: { color: C.text, fontSize: 18, fontWeight: '800', letterSpacing: -0.4 },
   diaryStatL: { color: C.faint, fontSize: 11.5, marginTop: 2 },
   diaryMonth: { color: C.sub, fontSize: 13, fontWeight: '700', marginBottom: 8, marginLeft: 4, marginTop: 4 },
+  celebrate: { backgroundColor: '#1E2A1B', borderRadius: 20, padding: 18, marginBottom: 12 },
+  celebrateT: { color: C.green, fontSize: 17, fontWeight: '800', letterSpacing: -0.3 },
+  celebrateSub: { color: '#8FBF9C', fontSize: 13, marginTop: 4 },
+  insightCard: { backgroundColor: C.card, borderRadius: 16, padding: 14, marginBottom: 12, borderLeftWidth: 3 },
+  insightT: { color: C.text, fontSize: 13.5, fontWeight: '600', lineHeight: 19 },
+  explainLine: { color: C.gold, fontSize: 12.5, lineHeight: 18, marginBottom: 6 },
+  crisisBtn: { backgroundColor: '#2A1B1E', borderRadius: 16, padding: 15, alignItems: 'center', marginBottom: 12 },
+  crisisBtnT: { color: '#E58B95', fontSize: 14, fontWeight: '800' },
+  crisisBox: { backgroundColor: C.card2, borderRadius: 14, padding: 14, marginTop: 10 },
+  crisisMoney: { color: C.green, fontSize: 26, fontWeight: '800', letterSpacing: -0.5 },
+  crisisMoneySub: { color: C.sub, fontSize: 12.5, marginTop: 3 },
+  healthRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 6 },
+  healthCheck: { fontSize: 14, fontWeight: '800', width: 18, textAlign: 'center' },
+  healthDay: { color: C.faint, fontSize: 12.5, fontWeight: '700', width: 42 },
+  healthText: { color: C.faint, fontSize: 13.5, flex: 1 },
+  healthDminus: { color: C.faint, fontSize: 11.5, fontWeight: '700' },
   topRow: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', marginTop: 10, marginBottom: 16 },
   appTitle: { color: C.text, fontSize: 22, fontWeight: '800', letterSpacing: -0.5 },
   appSub: { color: C.faint, fontSize: 13 },

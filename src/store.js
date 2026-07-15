@@ -132,6 +132,42 @@ export async function getMerchantMap() {
   } catch { return {}; }
 }
 
+// ---------------- 고액 지출 소명 (하루 10만원 이상) ----------------
+const EXPLAIN_KEY = 'spend_explanations_v1';
+export async function getExplanations() {
+  try {
+    const raw = await AsyncStorage.getItem(EXPLAIN_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+}
+export async function saveExplanation(dateKey, text) {
+  const map = await getExplanations();
+  map[dateKey] = text;
+  await AsyncStorage.setItem(EXPLAIN_KEY, JSON.stringify(map));
+  return map;
+}
+
+// ---------------- 응원 메시지 (웹페이지에서 작성 → 앱에서만 보임) ----------------
+export async function fetchCheers() {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return [];
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/cheers?order=ts.desc&limit=100&select=*`, {
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+    });
+    if (!res.ok) return []; // 테이블이 아직 없으면 조용히 무시
+    return await res.json();
+  } catch { return []; }
+}
+export async function deleteCheer(id) {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/cheers?id=eq.${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+    });
+  } catch (e) { /* 무시 */ }
+}
+
 // ---------------- Supabase 동기화 ----------------
 export async function syncToSupabase(record) {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
