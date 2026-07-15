@@ -172,6 +172,7 @@ export async function deleteCheer(id) {
 export async function syncToSupabase(record) {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
   if (record.type === 'income') return; // 수입은 폰에만 기록 (웹 페이지는 지출 전용)
+  if (record.deleted) return;           // 삭제된 항목은 웹에 안 보이게
   try {
     await fetch(`${SUPABASE_URL}/rest/v1/payments`, {
       method: 'POST',
@@ -205,5 +206,6 @@ async function deleteFromSupabase(id) {
 
 export async function syncAll() {
   const list = await getPayments();
-  for (const r of list.slice(0, 100)) await syncToSupabase(r);
+  // 삭제된 항목은 다시 올리지 않음 (재업로드되면 웹에서 되살아나는 버그 방지)
+  for (const r of list.filter(p => !p.deleted).slice(0, 100)) await syncToSupabase(r);
 }

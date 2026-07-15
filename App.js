@@ -20,7 +20,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r13'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r14'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const LOCK_LIMIT = 100000;   // 하루 이만큼 넘게 쓰면 소명 요청
 const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
 // 건강 회복 타임라인 (일 기준)
@@ -43,6 +43,8 @@ const HEALTH_SMOKE = [
   { d: 365, t: '심장병 위험이 절반으로 줄어요' },
 ];
 const dkey = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+// 금액 입력창에 콤마 자동 표시 (10000 → 10,000)
+const fmtInput = v => { const n = String(v).replace(/[^\d]/g, ''); return n ? Number(n).toLocaleString('ko-KR') : ''; };
 const CAT = Object.fromEntries(CATEGORIES.map(c => [c.key, c]));
 const won = n => n.toLocaleString('ko-KR');
 const DAY_NAMES = ['일','월','화','수','목','금','토'];
@@ -290,8 +292,8 @@ export default function App() {
 
   const openBudget = useCallback(() => {
     setBudgetDraft({
-      total: budgets.total ? String(budgets.total) : '',
-      cats: Object.fromEntries(CATEGORIES.map(c => [c.key, budgets.cats[c.key] ? String(budgets.cats[c.key]) : ''])),
+      total: budgets.total ? fmtInput(budgets.total) : '',
+      cats: Object.fromEntries(CATEGORIES.map(c => [c.key, budgets.cats[c.key] ? fmtInput(budgets.cats[c.key]) : ''])),
     });
     setBudgetOpen(true);
   }, [budgets]);
@@ -462,7 +464,7 @@ export default function App() {
 
   const openQuitEdit = useCallback(() => {
     setQuitDraft({
-      soberPerDay: String(quitSet.soberPerDay), cigsPerDay: String(quitSet.cigsPerDay), packPrice: String(quitSet.packPrice),
+      soberPerDay: fmtInput(quitSet.soberPerDay), cigsPerDay: String(quitSet.cigsPerDay), packPrice: fmtInput(quitSet.packPrice),
     });
     setQuitEdit(true);
   }, [quitSet]);
@@ -878,13 +880,13 @@ export default function App() {
             <View style={{ marginTop: 6 }}>
               <Text style={s.budLabel}>하루 평균 술값 (원)</Text>
               <TextInput style={s.input} keyboardType="number-pad" placeholderTextColor={C.faint}
-                value={quitDraft.soberPerDay} onChangeText={v => setQuitDraft(d => ({ ...d, soberPerDay: v }))} />
+                value={quitDraft.soberPerDay} onChangeText={v => setQuitDraft(d => ({ ...d, soberPerDay: fmtInput(v) }))} />
               <Text style={s.budLabel}>하루 피우던 담배 (개비)</Text>
               <TextInput style={s.input} keyboardType="number-pad" placeholderTextColor={C.faint}
                 value={quitDraft.cigsPerDay} onChangeText={v => setQuitDraft(d => ({ ...d, cigsPerDay: v }))} />
               <Text style={s.budLabel}>담배 한 갑 가격 (원)</Text>
               <TextInput style={s.input} keyboardType="number-pad" placeholderTextColor={C.faint}
-                value={quitDraft.packPrice} onChangeText={v => setQuitDraft(d => ({ ...d, packPrice: v }))} />
+                value={quitDraft.packPrice} onChangeText={v => setQuitDraft(d => ({ ...d, packPrice: fmtInput(v) }))} />
               <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={saveQuitDraft}>
                 <Text style={s.bigBtnT}>저장</Text>
               </TouchableOpacity>
@@ -937,23 +939,34 @@ export default function App() {
           </View>
         ))}
 
-        {/* 받은 응원 */}
-        <View style={s.statCard}>
-          <Text style={s.statTitle}>받은 응원 💌 {cheers.length > 0 ? `(${cheers.length})` : ''}</Text>
-          {cheers.length === 0 ? (
-            <Text style={s.statEmpty}>친구들이 조회 페이지에서 응원을 남기면 여기에만 보여요.{'\n'}(페이지에는 표시되지 않아요)</Text>
-          ) : cheers.map(c => {
-            const dt = new Date(c.ts);
-            return (
-              <TouchableOpacity key={c.id} style={s.diaryRow} activeOpacity={0.7}
-                onLongPress={() => confirmCheerDelete(c)} delayLongPress={450}>
-                <Text style={s.diaryDate}>{c.name || '익명'} · {dt.getMonth()+1}월 {dt.getDate()}일</Text>
-                <Text style={s.diaryText}>{c.text}</Text>
-              </TouchableOpacity>
-            );
-          })}
-          {cheers.length > 0 && <Text style={s.statEmpty}>길게 누르면 삭제돼요</Text>}
+      </ScrollView>
+      )}
+
+      {/* ── 응원함 탭 ── */}
+      {screen === 'cheer' && (
+      <ScrollView contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled"
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.sub} />}>
+        <View style={s.topRow}>
+          <Text style={s.appTitle}>응원함 💌</Text>
+          <Text style={s.appSub}>{cheers.length > 0 ? `${cheers.length}개 도착` : ''}</Text>
         </View>
+        {cheers.length === 0 ? (
+          <Text style={s.empty}>아직 도착한 응원이 없어요.{'\n'}친구들이 조회 페이지 맨 아래에서 남길 수 있어요.{'\n'}남긴 응원은 페이지에는 안 보이고 여기서만 보여요.</Text>
+        ) : (
+          <View style={s.dayCard}>
+            {cheers.map(c => {
+              const dt = new Date(c.ts);
+              return (
+                <TouchableOpacity key={c.id} style={s.diaryRow} activeOpacity={0.7}
+                  onLongPress={() => confirmCheerDelete(c)} delayLongPress={450}>
+                  <Text style={s.diaryDate}>💌 {c.name || '익명'} · {dt.getMonth()+1}월 {dt.getDate()}일 {hhmm(c.ts)}</Text>
+                  <Text style={s.diaryText}>{c.text}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        )}
+        {cheers.length > 0 && <Text style={s.hint}>응원을 길게 누르면 삭제돼요 · 아래로 당기면 새로고침</Text>}
       </ScrollView>
       )}
 
@@ -1010,7 +1023,7 @@ export default function App() {
 
       {/* 하단 고정 탭바 */}
       <View style={s.bottomBar}>
-        {[['home','🏠','가계부'],['save','💰','아낀돈'],['diary','✍️','일기']].map(([k, icon, label]) => (
+        {[['home','🏠','가계부'],['save','💰','아낀돈'],['diary','✍️','일기'],['cheer','💌', cheers.length ? `응원 ${cheers.length}` : '응원']].map(([k, icon, label]) => (
           <TouchableOpacity key={k} style={s.bottomTab} activeOpacity={0.7} onPress={() => setScreen(k)}>
             <Text style={{ fontSize: 20, opacity: screen === k ? 1 : 0.45 }}>{icon}</Text>
             <Text style={[s.bottomTabT, screen === k && { color: C.text }]}>{label}</Text>
@@ -1097,7 +1110,7 @@ export default function App() {
               placeholder={addType === 'expense' ? '어디서 썼나요? (예: 김밥천국)' : '어디서 들어왔나요? (예: 월급)'}
               placeholderTextColor={C.faint} value={addName} onChangeText={setAddName} />
             <TextInput style={s.input} placeholder="금액 (원)" placeholderTextColor={C.faint}
-              keyboardType="number-pad" value={addAmt} onChangeText={setAddAmt} />
+              keyboardType="number-pad" value={addAmt} onChangeText={v => setAddAmt(fmtInput(v))} />
             <TouchableOpacity style={[s.bigBtn, addType === 'income' && { backgroundColor: C.green }]} activeOpacity={0.85} onPress={addManual}>
               <Text style={s.bigBtnT}>추가하기</Text>
             </TouchableOpacity>
@@ -1171,13 +1184,13 @@ export default function App() {
               <Text style={s.budLabel}>전체 월 예산</Text>
               <TextInput style={s.input} placeholder="예: 500000" placeholderTextColor={C.faint}
                 keyboardType="number-pad" value={budgetDraft.total}
-                onChangeText={v => setBudgetDraft(d => ({ ...d, total: v }))} />
+                onChangeText={v => setBudgetDraft(d => ({ ...d, total: fmtInput(v) }))} />
               {CATEGORIES.map(c => (
                 <View key={c.key}>
                   <Text style={s.budLabel}>{c.label}</Text>
                   <TextInput style={s.input} placeholder="비워두면 미설정" placeholderTextColor={C.faint}
                     keyboardType="number-pad" value={budgetDraft.cats[c.key] || ''}
-                    onChangeText={v => setBudgetDraft(d => ({ ...d, cats: { ...d.cats, [c.key]: v } }))} />
+                    onChangeText={v => setBudgetDraft(d => ({ ...d, cats: { ...d.cats, [c.key]: fmtInput(v) } }))} />
                 </View>
               ))}
             </ScrollView>
