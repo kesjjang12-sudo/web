@@ -15,7 +15,7 @@ const TIME_RE = /\d{1,2}:\d{2}/g;
 const STOPWORDS = [
   '승인', '취소', '일시불', '할부', '체크', '신용', '해외', '국내',
   '누적', '잔액', '출금', '입금', '결제', '됐어요', '되었습니다', '완료',
-  'KRW', '원', '님', '고객님', '카드', '에서', '사용',
+  'KRW', '원', '님', '고객님', '회원님', '카드', '에서', '사용', '법인', 'ZERO', '체크', '신용',
   '신한', '현대', '삼성', '국민', 'KB', '우리', '하나', 'NH', '농협', '롯데', '토스', '카카오뱅크', '카카오페이',
 ];
 
@@ -33,6 +33,9 @@ export function parsePayment(rawText) {
   const isPayment = /승인|결제|사용|출금/.test(text);
   if (!isPayment) return null;
   if (/취소/.test(text)) return null; // 결제취소 알림 제외
+  // 카드값이 통장에서 빠져나가는 알림은 제외 (개별 카드 결제가 이미 기록돼서 이중집계됨)
+  if (/카드대금|카드값/.test(text)) return null;
+  if (/회원님[\s\S]{0,25}출금/.test(text)) return null; // "회원님, ○○은행에서 483,975원 출금되었습니다"
 
   const amount = parseInt(amountMatch[1].replace(/,/g, ''), 10);
   if (!amount || amount < 100) return null;
@@ -42,16 +45,20 @@ export function parsePayment(rawText) {
     .replace(/([\d,]{2,})\s*원/g, ' ')         // 모든 금액 제거 (첫 번째만이 아니라 전부)
     .replace(DATE_RE, ' ')
     .replace(TIME_RE, ' ')
-    .replace(/\S*\*+\S*/g, ' ')                // 김*성, 롯데0*5* 같은 마스킹 토큰
-    .replace(/\[.*?\]|\(.*?\)/g, ' ')          // [Web발신] 등
-    .replace(/[|·]/g, ' ');
-  let tokens = cleaned.split(/\s+/).map(t => t.replace(/(에서|됐어요|되었습니다)$/,'')).filter(t => {
-    if (!t || t.length < 2) return false;
-    if (STOPWORDS.some(sw => t === sw || t === sw + '님')) return false;
-    if (/카드|승인|결제|뱅크|페이$|Web발신/i.test(t)) return false; // 카드사/승인 토큰 제거
-    if (/^[\d,./:-]+$/.test(t)) return false;
-    return true;
-  });
+    .replace(/[가-힣]\*+[가-힣]님?/g, ' ')     // 김*성, 김*성님 (이름 마스킹 — 뒤에 글자가 있을 때만)
+    .replace(/\S*\d\*+\S*/g, ' ')              // 롯데0*5* 같은 카드번호 마스킹
+    .replace(/\[.*?\]|\(.*?\)/g, ' ')          // [Web발신], (1건) 등
+    .replace(/[|·,]/g, ' ');
+  let tokens = cleaned.split(/\s+/)
+    .map(t => t.replace(/(에서|됐어요|되었습니다)$/,'').replace(/^[-*]+|[-*]+$/g, '')) // "한국복합물*" → 한국복합물, "법인-" → 법인
+    .filter(t => {
+      if (!t || t.length < 2) return false;
+      if (STOPWORDS.some(sw => t === sw || t === sw + '님')) return false;
+      if (/카드|승인|결제|뱅크|페이$|Web발신/i.test(t)) return false; // 카드사/승인 토큰 제거
+      if (/^[\d,./:-]+$/.test(t)) return false;
+      if (/^[\d-]{6,}$/.test(t)) return false;   // 1588-9955 같은 발신번호
+      return true;
+    });
   // 남은 토큰 중 가장 뒤쪽(카드알림은 보통 가맹점이 마지막) 최대 3개를 가맹점명으로
   const merchant = tokens.slice(-3).join(' ').trim() || '알수없음';
 
