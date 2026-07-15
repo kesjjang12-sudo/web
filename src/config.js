@@ -8,6 +8,17 @@ export const QUIT_GOALS = [
   { key: 'smoke', label: '금연', start: '2026-07-13' },
 ];
 
+// 1-1) 아낀 돈으로 살 수 있는 것들 (재미용 — 가격은 대략적인 기준, 자유롭게 수정)
+export const SHOP_ITEMS = [
+  { emoji: '📱', name: '삼성전자',        unit: '주',   price: 90000 },
+  { emoji: '💾', name: 'SK하이닉스',      unit: '주',   price: 450000 },
+  { emoji: '💽', name: '마이크론',        unit: '주',   price: 320000 },
+  { emoji: '🚄', name: 'SRT 부산행',      unit: '장',   price: 52600 },
+  { emoji: '✈️', name: '일본 왕복 항공권', unit: '장',   price: 350000 },
+  { emoji: '🍗', name: '치킨',            unit: '마리', price: 23000 },
+  { emoji: '☕', name: '스타벅스 아메리카노', unit: '잔', price: 4700 },
+];
+
 // 2) 감시할 금융앱 패키지명 (여기 있는 앱의 알림만 분석)
 export const BANK_PACKAGES = [
   'com.shcard.smartpay',        // 신한플레이(신한카드)

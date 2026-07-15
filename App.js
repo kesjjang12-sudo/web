@@ -8,9 +8,10 @@ import RNAndroidNotificationListener from 'react-native-android-notification-lis
 import {
   getPayments, savePayment, updateItem, deletePayment, restorePayment, purgePayment,
   syncAll, getBudgets, saveBudgets,
+  getDiary, addDiary, deleteDiary, getQuitSettings, saveQuitSettings,
 } from './src/store';
 import { parsePayment } from './src/parser';
-import { QUIT_GOALS, CATEGORIES, SUPABASE_URL } from './src/config';
+import { QUIT_GOALS, CATEGORIES, SHOP_ITEMS, SUPABASE_URL } from './src/config';
 
 // 토스 스타일 다크 팔레트
 const C = {
@@ -18,7 +19,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r8'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r9'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const CAT = Object.fromEntries(CATEGORIES.map(c => [c.key, c]));
 const won = n => n.toLocaleString('ko-KR');
 const DAY_NAMES = ['일','월','화','수','목','금','토'];
@@ -76,12 +77,19 @@ export default function App() {
   const [showDeleted, setShowDeleted] = useState(false);
   const [budgetOpen, setBudgetOpen] = useState(false);
   const [budgetDraft, setBudgetDraft] = useState({ total: '', cats: {} });
+  const [goalOpen, setGoalOpen] = useState(false);   // 금주·금연 화면
+  const [diary, setDiary] = useState([]);
+  const [diaryText, setDiaryText] = useState('');
+  const [quitSet, setQuitSet] = useState({ soberPerDay: 15000, cigsPerDay: 10, packPrice: 4500 });
+  const [quitEdit, setQuitEdit] = useState(false);
+  const [quitDraft, setQuitDraft] = useState({ soberPerDay: '', cigsPerDay: '', packPrice: '' });
 
   const load = useCallback(async () => {
-    const [p, b, st] = await Promise.all([
-      getPayments(), getBudgets(), RNAndroidNotificationListener.getPermissionStatus(),
+    const [p, b, d, q, st] = await Promise.all([
+      getPayments(), getBudgets(), getDiary(), getQuitSettings(),
+      RNAndroidNotificationListener.getPermissionStatus(),
     ]);
-    setPayments(p); setBudgets(b); setPerm(st);
+    setPayments(p); setBudgets(b); setDiary(d); setQuitSet(q); setPerm(st);
   }, []);
 
   useEffect(() => {
@@ -289,6 +297,52 @@ export default function App() {
     });
   }, [monthPays, monthIncome, monthOffset]);
 
+  // ── 금주·금연 아낀 돈 ──
+  const soberDays = daysSince(QUIT_GOALS[0].start);
+  const smokeDays = daysSince(QUIT_GOALS[1].start);
+  const savedSober = Math.max(0, soberDays) * quitSet.soberPerDay;
+  const savedSmoke = Math.max(0, smokeDays) * Math.round(quitSet.cigsPerDay / 20 * quitSet.packPrice);
+  const savedTotal = savedSober + savedSmoke;
+
+  // 일기 쓴 날이 금주 며칠째였는지
+  const diaryDayNo = (iso) => {
+    const d = new Date(iso);
+    const [y, m, dd] = QUIT_GOALS[0].start.split('-').map(Number);
+    const t = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    return Math.round((t - new Date(y, m - 1, dd)) / 86400000) + 1;
+  };
+
+  const submitDiary = useCallback(async () => {
+    if (!diaryText.trim()) return;
+    setDiary(await addDiary(diaryText.trim()));
+    setDiaryText('');
+  }, [diaryText]);
+
+  const confirmDiaryDelete = useCallback((d) => {
+    Alert.alert('일기를 삭제할까요?', '', [
+      { text: '취소', style: 'cancel' },
+      { text: '삭제', style: 'destructive', onPress: async () => setDiary(await deleteDiary(d.id)) },
+    ]);
+  }, []);
+
+  const openQuitEdit = useCallback(() => {
+    setQuitDraft({
+      soberPerDay: String(quitSet.soberPerDay), cigsPerDay: String(quitSet.cigsPerDay), packPrice: String(quitSet.packPrice),
+    });
+    setQuitEdit(true);
+  }, [quitSet]);
+
+  const saveQuitDraft = useCallback(async () => {
+    const num = (v, def) => parseInt(String(v).replace(/[^\d]/g, ''), 10) || def;
+    const next = {
+      soberPerDay: num(quitDraft.soberPerDay, 0),
+      cigsPerDay: num(quitDraft.cigsPerDay, 0),
+      packPrice: num(quitDraft.packPrice, 4500),
+    };
+    await saveQuitSettings(next);
+    setQuitSet(next); setQuitEdit(false);
+  }, [quitDraft]);
+
   // 테스트: 가짜 결제 알림 흘려보기
   const testNotif = useCallback(async () => {
     const samples = [
@@ -347,21 +401,24 @@ export default function App() {
           </TouchableOpacity>
         )}
 
-        {/* D-day 카드 */}
+        {/* D-day 카드 (탭 → 아낀 돈 + 일기장) */}
         <View style={s.ddayRow}>
           {QUIT_GOALS.map((g, i) => {
             const days = daysSince(g.start);
             const color = i === 0 ? C.green : C.blueText;
             const [, sm, sd] = g.start.split('-').map(Number);
             return (
-              <View key={g.key} style={s.dday}>
+              <TouchableOpacity key={g.key} style={s.dday} activeOpacity={0.7} onPress={() => setGoalOpen(true)}>
                 <Text style={s.ddayTag}>{g.label}</Text>
                 <Text style={[s.ddayNum, { color }]}>{days}일째</Text>
                 <Text style={s.ddaySince}>{sm}월 {sd}일부터</Text>
-              </View>
+              </TouchableOpacity>
             );
           })}
         </View>
+        <TouchableOpacity activeOpacity={0.7} onPress={() => setGoalOpen(true)}>
+          <Text style={s.savedTeaser}>💰 지금까지 <Text style={{ color: C.green, fontWeight: '800' }}>{won(savedTotal)}원</Text> 아꼈어요 · 탭해서 보기 ›</Text>
+        </TouchableOpacity>
 
         {/* 월 요약 */}
         <View style={s.month}>
@@ -700,6 +757,114 @@ export default function App() {
         </TouchableOpacity>
       </Modal>
 
+      {/* 금주·금연 화면 (아낀 돈 + 쇼핑 + 일기장) */}
+      <Modal visible={goalOpen} animationType="slide" onRequestClose={() => setGoalOpen(false)}>
+        <SafeAreaView style={s.root}>
+          <ScrollView contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled">
+            <View style={s.topRow}>
+              <Text style={s.appTitle}>금주 · 금연</Text>
+              <TouchableOpacity onPress={() => setGoalOpen(false)} hitSlop={10}>
+                <Text style={s.closeX}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={s.ddayRow}>
+              <View style={s.dday}>
+                <Text style={s.ddayTag}>금주</Text>
+                <Text style={[s.ddayNum, { color: C.green }]}>{soberDays}일째</Text>
+                <Text style={s.ddaySince}>+{won(savedSober)}원 아낌</Text>
+              </View>
+              <View style={s.dday}>
+                <Text style={s.ddayTag}>금연</Text>
+                <Text style={[s.ddayNum, { color: C.blueText }]}>{smokeDays}일째</Text>
+                <Text style={s.ddaySince}>+{won(savedSmoke)}원 아낌</Text>
+              </View>
+            </View>
+
+            {/* 아낀 돈 */}
+            <View style={s.statCard}>
+              <View style={s.totalRow}>
+                <Text style={s.statTitle}>지금까지 아낀 돈</Text>
+                <TouchableOpacity onPress={openQuitEdit} hitSlop={8}>
+                  <Text style={s.budgetLink}>기준 바꾸기 ›</Text>
+                </TouchableOpacity>
+              </View>
+              <Text style={[s.total, { color: C.green }]}>{won(savedTotal)}원</Text>
+              <Text style={s.projLine}>
+                술 하루 {won(quitSet.soberPerDay)}원 × {soberDays}일 · 담배 하루 {quitSet.cigsPerDay}개비(갑 {won(quitSet.packPrice)}원) × {smokeDays}일
+              </Text>
+              {quitEdit && (
+                <View style={{ marginTop: 6 }}>
+                  <Text style={s.budLabel}>하루 평균 술값 (원)</Text>
+                  <TextInput style={s.input} keyboardType="number-pad" placeholderTextColor={C.faint}
+                    value={quitDraft.soberPerDay} onChangeText={v => setQuitDraft(d => ({ ...d, soberPerDay: v }))} />
+                  <Text style={s.budLabel}>하루 피우던 담배 (개비)</Text>
+                  <TextInput style={s.input} keyboardType="number-pad" placeholderTextColor={C.faint}
+                    value={quitDraft.cigsPerDay} onChangeText={v => setQuitDraft(d => ({ ...d, cigsPerDay: v }))} />
+                  <Text style={s.budLabel}>담배 한 갑 가격 (원)</Text>
+                  <TextInput style={s.input} keyboardType="number-pad" placeholderTextColor={C.faint}
+                    value={quitDraft.packPrice} onChangeText={v => setQuitDraft(d => ({ ...d, packPrice: v }))} />
+                  <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={saveQuitDraft}>
+                    <Text style={s.bigBtnT}>저장</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+
+            {/* 이 돈이면 살 수 있어요 */}
+            <View style={s.statCard}>
+              <Text style={s.statTitle}>이 돈이면 살 수 있어요 🛒</Text>
+              {SHOP_ITEMS.map(it => {
+                const v = savedTotal / it.price;
+                const can = v >= 1;
+                const shown = v >= 10 ? String(Math.floor(v)) : (Math.floor(v * 10) / 10).toString();
+                return (
+                  <View key={it.name} style={s.shopRow}>
+                    <Text style={s.shopEmoji}>{it.emoji}</Text>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={s.shopName}>{it.name}</Text>
+                      <View style={s.shopBarBg}>
+                        <View style={[s.shopBarFill, {
+                          width: `${Math.min(100, v * 100)}%`,
+                          backgroundColor: can ? C.green : '#3A3F4A',
+                        }]} />
+                      </View>
+                    </View>
+                    <Text style={[s.shopCount, can && { color: C.green }]}>
+                      {can ? `${shown}${it.unit} 가능!` : `${shown}${it.unit} (${Math.round(v*100)}%)`}
+                    </Text>
+                  </View>
+                );
+              })}
+              <Text style={s.statEmpty}>가격은 대략적인 기준이에요 · 하루하루 지날수록 올라가요 📈</Text>
+            </View>
+
+            {/* 일기장 */}
+            <View style={s.statCard}>
+              <Text style={s.statTitle}>금주·금연 일기 ✍️</Text>
+              <TextInput style={[s.input, { minHeight: 70, textAlignVertical: 'top', marginTop: 0 }]} multiline
+                placeholder="오늘 어땠나요? (예: 회식이었는데 사이다로 버텼다. 뿌듯함)"
+                placeholderTextColor={C.faint} value={diaryText} onChangeText={setDiaryText} />
+              <TouchableOpacity style={[s.bigBtn, { backgroundColor: C.green }]} activeOpacity={0.85} onPress={submitDiary}>
+                <Text style={s.bigBtnT}>기록하기</Text>
+              </TouchableOpacity>
+              {diary.length === 0 && <Text style={[s.statEmpty, { marginTop: 14 }]}>첫 일기를 남겨보세요. 나중에 다시 읽으면 힘이 돼요.</Text>}
+              {diary.map(d => {
+                const dt = new Date(d.ts);
+                return (
+                  <TouchableOpacity key={d.id} style={s.diaryRow} activeOpacity={0.7}
+                    onLongPress={() => confirmDiaryDelete(d)} delayLongPress={450}>
+                    <Text style={s.diaryDate}>{dt.getMonth()+1}월 {dt.getDate()}일 {hhmm(d.ts)} · {diaryDayNo(d.ts)}일째</Text>
+                    <Text style={s.diaryText}>{d.text}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+              {diary.length > 0 && <Text style={s.statEmpty}>일기를 길게 누르면 삭제돼요</Text>}
+            </View>
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
+
       {/* 예산 설정 모달 */}
       <Modal visible={budgetOpen} transparent animationType="slide" onRequestClose={() => setBudgetOpen(false)}>
         <TouchableOpacity style={s.modalBg} activeOpacity={1} onPress={() => setBudgetOpen(false)}>
@@ -746,6 +911,17 @@ const s = StyleSheet.create({
   ddayTag: { color: C.sub, fontSize: 13, fontWeight: '600' },
   ddayNum: { fontSize: 26, fontWeight: '800', marginTop: 4, letterSpacing: -0.5 },
   ddaySince: { color: C.faint, fontSize: 12, marginTop: 3 },
+  savedTeaser: { color: C.sub, fontSize: 13, fontWeight: '600', textAlign: 'center', marginBottom: 12, marginTop: -2 },
+  closeX: { color: C.sub, fontSize: 20, fontWeight: '700', padding: 4 },
+  shopRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 8 },
+  shopEmoji: { fontSize: 22, width: 30, textAlign: 'center' },
+  shopName: { color: C.text, fontSize: 14, fontWeight: '600', marginBottom: 5 },
+  shopBarBg: { height: 6, borderRadius: 3, backgroundColor: C.card2, overflow: 'hidden' },
+  shopBarFill: { height: '100%', borderRadius: 3 },
+  shopCount: { color: C.faint, fontSize: 12.5, fontWeight: '700', width: 96, textAlign: 'right' },
+  diaryRow: { borderTopWidth: 1, borderTopColor: C.card2, paddingVertical: 12 },
+  diaryDate: { color: C.faint, fontSize: 12, fontWeight: '600', marginBottom: 4 },
+  diaryText: { color: C.text, fontSize: 14.5, lineHeight: 21 },
 
   month: { backgroundColor: C.card, borderRadius: 20, padding: 20, marginBottom: 12 },
   monthHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },

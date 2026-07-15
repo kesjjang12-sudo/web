@@ -5,6 +5,38 @@ import { guessCategory } from './parser';
 const KEY = 'payments_v1';
 const MERCHANT_CAT_KEY = 'merchant_categories_v1';
 const BUDGET_KEY = 'budgets_v1';
+const DIARY_KEY = 'diary_v1';
+const QUIT_SET_KEY = 'quit_settings_v1';
+
+// ---------------- 금주/금연 일기 ----------------
+export async function getDiary() {
+  try {
+    const raw = await AsyncStorage.getItem(DIARY_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+export async function addDiary(text) {
+  const list = await getDiary();
+  const next = [{ id: `d_${Date.now()}`, ts: new Date().toISOString(), text }, ...list].slice(0, 1000);
+  await AsyncStorage.setItem(DIARY_KEY, JSON.stringify(next));
+  return next;
+}
+export async function deleteDiary(id) {
+  const next = (await getDiary()).filter(d => d.id !== id);
+  await AsyncStorage.setItem(DIARY_KEY, JSON.stringify(next));
+  return next;
+}
+
+// ---------------- 아낀 돈 계산 기준 (하루 술값 / 담배 개비 / 갑 가격) ----------------
+export async function getQuitSettings() {
+  try {
+    const raw = await AsyncStorage.getItem(QUIT_SET_KEY);
+    return raw ? JSON.parse(raw) : { soberPerDay: 15000, cigsPerDay: 10, packPrice: 4500 };
+  } catch { return { soberPerDay: 15000, cigsPerDay: 10, packPrice: 4500 }; }
+}
+export async function saveQuitSettings(s) {
+  await AsyncStorage.setItem(QUIT_SET_KEY, JSON.stringify(s));
+}
 
 // 예산: { total: 전체 월예산(0=미설정), cats: { food: 금액, ... } }
 export async function getBudgets() {
