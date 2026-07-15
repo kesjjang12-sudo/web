@@ -208,4 +208,6 @@ export async function syncAll() {
   const list = await getPayments();
   // 삭제된 항목은 다시 올리지 않음 (재업로드되면 웹에서 되살아나는 버그 방지)
   for (const r of list.filter(p => !p.deleted).slice(0, 100)) await syncToSupabase(r);
+  // 예전 버그로 서버에 남아있을 수 있는 삭제 항목 정리
+  for (const r of list.filter(p => p.deleted).slice(0, 100)) await deleteFromSupabase(r.id);
 }
