@@ -19,7 +19,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r10'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r11'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const CAT = Object.fromEntries(CATEGORIES.map(c => [c.key, c]));
 const won = n => n.toLocaleString('ko-KR');
 const DAY_NAMES = ['일','월','화','수','목','금','토'];
@@ -77,7 +77,7 @@ export default function App() {
   const [showDeleted, setShowDeleted] = useState(false);
   const [budgetOpen, setBudgetOpen] = useState(false);
   const [budgetDraft, setBudgetDraft] = useState({ total: '', cats: {} });
-  const [goalOpen, setGoalOpen] = useState(false);   // 금주·금연 화면
+  const [screen, setScreen] = useState('home');      // 'home' | 'save' | 'diary' (하단 탭)
   const [diary, setDiary] = useState([]);
   const [diaryText, setDiaryText] = useState('');
   const [quitSet, setQuitSet] = useState({ soberPerDay: 15000, cigsPerDay: 10, packPrice: 4500 });
@@ -312,6 +312,36 @@ export default function App() {
     return Math.round((t - new Date(y, m - 1, dd)) / 86400000) + 1;
   };
 
+  // 일기: 월 → 날짜별 그룹 + 요약 통계
+  const diaryGroups = useMemo(() => {
+    const months = [];
+    diary.forEach(d => {
+      const dt = new Date(d.ts);
+      const mLabel = `${dt.getFullYear()}년 ${dt.getMonth()+1}월`;
+      let mo = months.find(x => x.label === mLabel);
+      if (!mo) { mo = { label: mLabel, days: [] }; months.push(mo); }
+      const dLabel = dayLabel(dt);
+      let dy = mo.days.find(x => x.label === dLabel);
+      if (!dy) { dy = { label: dLabel, dayNo: diaryDayNo(d.ts), items: [] }; mo.days.push(dy); }
+      dy.items.push(d);
+    });
+    return months;
+  }, [diary]);
+
+  const diaryStats = useMemo(() => {
+    const daySet = new Set(diary.map(d => new Date(d.ts).toDateString()));
+    // 연속 작성일 (오늘 또는 어제부터 거꾸로)
+    let streak = 0;
+    const cur = new Date();
+    if (!daySet.has(cur.toDateString())) cur.setDate(cur.getDate() - 1);
+    while (daySet.has(cur.toDateString())) { streak++; cur.setDate(cur.getDate() - 1); }
+    const thisMonth = diary.filter(d => {
+      const dt = new Date(d.ts);
+      return dt.getFullYear() === now.getFullYear() && dt.getMonth() === now.getMonth();
+    }).length;
+    return { total: diary.length, days: daySet.size, streak, thisMonth };
+  }, [diary]);
+
   const submitDiary = useCallback(async () => {
     if (!diaryText.trim()) return;
     setDiary(await addDiary(diaryText.trim()));
@@ -385,6 +415,7 @@ export default function App() {
   return (
     <SafeAreaView style={s.root}>
       <StatusBar style="light" />
+      {screen === 'home' && (
       <ScrollView contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled"
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.sub} />}>
 
@@ -408,7 +439,7 @@ export default function App() {
             const color = i === 0 ? C.green : C.blueText;
             const [, sm, sd] = g.start.split('-').map(Number);
             return (
-              <TouchableOpacity key={g.key} style={s.dday} activeOpacity={0.7} onPress={() => setGoalOpen(true)}>
+              <TouchableOpacity key={g.key} style={s.dday} activeOpacity={0.7} onPress={() => setScreen('save')}>
                 <Text style={s.ddayTag}>{g.label}</Text>
                 <Text style={[s.ddayNum, { color }]}>{days}일째</Text>
                 <Text style={s.ddaySince}>{sm}월 {sd}일부터</Text>
@@ -416,7 +447,7 @@ export default function App() {
             );
           })}
         </View>
-        <TouchableOpacity activeOpacity={0.7} onPress={() => setGoalOpen(true)}>
+        <TouchableOpacity activeOpacity={0.7} onPress={() => setScreen('save')}>
           <Text style={s.savedTeaser}>💰 지금까지 <Text style={{ color: C.green, fontWeight: '800' }}>{won(savedTotal)}원</Text> 아꼈어요 · 탭해서 보기 ›</Text>
         </TouchableOpacity>
 
@@ -671,11 +702,154 @@ export default function App() {
           )}
         </View>
       </ScrollView>
+      )}
 
-      {/* + 직접 추가 버튼 */}
-      <TouchableOpacity style={s.fab} activeOpacity={0.8} onPress={() => { setAddType('expense'); setAddCat('food'); setAdding(true); }}>
-        <Text style={s.fabT}>＋</Text>
-      </TouchableOpacity>
+      {/* ── 아낀돈 탭 ── */}
+      {screen === 'save' && (
+      <ScrollView contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled">
+        <View style={s.topRow}>
+          <Text style={s.appTitle}>아낀 돈</Text>
+          <Text style={s.appSub}>금주 · 금연</Text>
+        </View>
+
+        <View style={s.ddayRow}>
+          <View style={s.dday}>
+            <Text style={s.ddayTag}>금주</Text>
+            <Text style={[s.ddayNum, { color: C.green }]}>{soberDays}일째</Text>
+            <Text style={s.ddaySince}>+{won(savedSober)}원 아낌</Text>
+          </View>
+          <View style={s.dday}>
+            <Text style={s.ddayTag}>금연</Text>
+            <Text style={[s.ddayNum, { color: C.blueText }]}>{smokeDays}일째</Text>
+            <Text style={s.ddaySince}>+{won(savedSmoke)}원 아낌</Text>
+          </View>
+        </View>
+
+        <View style={s.statCard}>
+          <View style={s.totalRow}>
+            <Text style={s.statTitle}>지금까지 아낀 돈</Text>
+            <TouchableOpacity onPress={openQuitEdit} hitSlop={8}>
+              <Text style={s.budgetLink}>기준 바꾸기 ›</Text>
+            </TouchableOpacity>
+          </View>
+          <Text style={[s.total, { color: C.green }]}>{won(savedTotal)}원</Text>
+          <Text style={s.projLine}>
+            술 하루 {won(quitSet.soberPerDay)}원 × {soberDays}일 · 담배 하루 {quitSet.cigsPerDay}개비(갑 {won(quitSet.packPrice)}원) × {smokeDays}일
+          </Text>
+          {quitEdit && (
+            <View style={{ marginTop: 6 }}>
+              <Text style={s.budLabel}>하루 평균 술값 (원)</Text>
+              <TextInput style={s.input} keyboardType="number-pad" placeholderTextColor={C.faint}
+                value={quitDraft.soberPerDay} onChangeText={v => setQuitDraft(d => ({ ...d, soberPerDay: v }))} />
+              <Text style={s.budLabel}>하루 피우던 담배 (개비)</Text>
+              <TextInput style={s.input} keyboardType="number-pad" placeholderTextColor={C.faint}
+                value={quitDraft.cigsPerDay} onChangeText={v => setQuitDraft(d => ({ ...d, cigsPerDay: v }))} />
+              <Text style={s.budLabel}>담배 한 갑 가격 (원)</Text>
+              <TextInput style={s.input} keyboardType="number-pad" placeholderTextColor={C.faint}
+                value={quitDraft.packPrice} onChangeText={v => setQuitDraft(d => ({ ...d, packPrice: v }))} />
+              <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={saveQuitDraft}>
+                <Text style={s.bigBtnT}>저장</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+        </View>
+
+        <View style={s.statCard}>
+          <Text style={s.statTitle}>이 돈이면 살 수 있어요 🛒</Text>
+          {SHOP_ITEMS.map(it => {
+            const v = savedTotal / it.price;
+            const can = v >= 1;
+            const shown = v >= 10 ? String(Math.floor(v)) : (Math.floor(v * 10) / 10).toString();
+            return (
+              <View key={it.name} style={s.shopRow}>
+                <Text style={s.shopEmoji}>{it.emoji}</Text>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={s.shopName}>{it.name}</Text>
+                  <View style={s.shopBarBg}>
+                    <View style={[s.shopBarFill, {
+                      width: `${Math.min(100, v * 100)}%`,
+                      backgroundColor: can ? C.green : '#3A3F4A',
+                    }]} />
+                  </View>
+                </View>
+                <Text style={[s.shopCount, can && { color: C.green }]}>
+                  {can ? `${shown}${it.unit} 가능!` : `${shown}${it.unit} (${Math.round(v*100)}%)`}
+                </Text>
+              </View>
+            );
+          })}
+          <Text style={s.statEmpty}>가격은 대략적인 기준이에요 · 하루하루 지날수록 올라가요 📈</Text>
+        </View>
+      </ScrollView>
+      )}
+
+      {/* ── 일기 탭 ── */}
+      {screen === 'diary' && (
+      <ScrollView contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled">
+        <View style={s.topRow}>
+          <Text style={s.appTitle}>일기</Text>
+          <Text style={s.appSub}>금주 · 금연 기록</Text>
+        </View>
+
+        {/* 요약 */}
+        <View style={s.diaryStatsRow}>
+          <View style={s.diaryStat}><Text style={s.diaryStatV}>{diaryStats.streak}일</Text><Text style={s.diaryStatL}>연속 작성</Text></View>
+          <View style={s.diaryStat}><Text style={s.diaryStatV}>{diaryStats.thisMonth}개</Text><Text style={s.diaryStatL}>이번 달</Text></View>
+          <View style={s.diaryStat}><Text style={s.diaryStatV}>{diaryStats.total}개</Text><Text style={s.diaryStatL}>전체</Text></View>
+        </View>
+
+        <View style={s.statCard}>
+          <TextInput style={[s.input, { minHeight: 70, textAlignVertical: 'top', marginTop: 0 }]} multiline
+            placeholder="오늘 어땠나요? (예: 회식이었는데 사이다로 버텼다. 뿌듯함)"
+            placeholderTextColor={C.faint} value={diaryText} onChangeText={setDiaryText} />
+          <TouchableOpacity style={[s.bigBtn, { backgroundColor: C.green }]} activeOpacity={0.85} onPress={submitDiary}>
+            <Text style={s.bigBtnT}>기록하기</Text>
+          </TouchableOpacity>
+        </View>
+
+        {diary.length === 0 && (
+          <Text style={s.empty}>첫 일기를 남겨보세요.{'\n'}나중에 다시 읽으면 힘이 돼요.</Text>
+        )}
+        {diaryGroups.map(mo => (
+          <View key={mo.label}>
+            <Text style={s.diaryMonth}>{mo.label}</Text>
+            {mo.days.map(dy => (
+              <View key={dy.label} style={s.dayCard}>
+                <View style={s.dayHead}>
+                  <Text style={s.dayHeadT}>{dy.label}</Text>
+                  <Text style={s.dayHeadT}>{dy.dayNo}일째</Text>
+                </View>
+                {dy.items.map(d => (
+                  <TouchableOpacity key={d.id} style={s.diaryRow} activeOpacity={0.7}
+                    onLongPress={() => confirmDiaryDelete(d)} delayLongPress={450}>
+                    <Text style={s.diaryDate}>{hhmm(d.ts)}</Text>
+                    <Text style={s.diaryText}>{d.text}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ))}
+          </View>
+        ))}
+        {diary.length > 0 && <Text style={s.hint}>일기를 길게 누르면 삭제돼요</Text>}
+      </ScrollView>
+      )}
+
+      {/* 하단 고정 탭바 */}
+      <View style={s.bottomBar}>
+        {[['home','🏠','가계부'],['save','💰','아낀돈'],['diary','✍️','일기']].map(([k, icon, label]) => (
+          <TouchableOpacity key={k} style={s.bottomTab} activeOpacity={0.7} onPress={() => setScreen(k)}>
+            <Text style={{ fontSize: 20, opacity: screen === k ? 1 : 0.45 }}>{icon}</Text>
+            <Text style={[s.bottomTabT, screen === k && { color: C.text }]}>{label}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {/* + 직접 추가 버튼 (가계부 탭에서만) */}
+      {screen === 'home' && (
+        <TouchableOpacity style={s.fab} activeOpacity={0.8} onPress={() => { setAddType('expense'); setAddCat('food'); setAdding(true); }}>
+          <Text style={s.fabT}>＋</Text>
+        </TouchableOpacity>
+      )}
 
       {/* 달력 일자 상세 모달 */}
       <Modal visible={selDay != null} transparent animationType="slide" onRequestClose={() => setSelDay(null)}>
@@ -757,114 +931,6 @@ export default function App() {
         </TouchableOpacity>
       </Modal>
 
-      {/* 금주·금연 화면 (아낀 돈 + 쇼핑 + 일기장) */}
-      <Modal visible={goalOpen} animationType="slide" onRequestClose={() => setGoalOpen(false)}>
-        <SafeAreaView style={s.root}>
-          <ScrollView contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled">
-            <View style={s.topRow}>
-              <Text style={s.appTitle}>금주 · 금연</Text>
-              <TouchableOpacity onPress={() => setGoalOpen(false)} hitSlop={10}>
-                <Text style={s.closeX}>✕</Text>
-              </TouchableOpacity>
-            </View>
-
-            <View style={s.ddayRow}>
-              <View style={s.dday}>
-                <Text style={s.ddayTag}>금주</Text>
-                <Text style={[s.ddayNum, { color: C.green }]}>{soberDays}일째</Text>
-                <Text style={s.ddaySince}>+{won(savedSober)}원 아낌</Text>
-              </View>
-              <View style={s.dday}>
-                <Text style={s.ddayTag}>금연</Text>
-                <Text style={[s.ddayNum, { color: C.blueText }]}>{smokeDays}일째</Text>
-                <Text style={s.ddaySince}>+{won(savedSmoke)}원 아낌</Text>
-              </View>
-            </View>
-
-            {/* 아낀 돈 */}
-            <View style={s.statCard}>
-              <View style={s.totalRow}>
-                <Text style={s.statTitle}>지금까지 아낀 돈</Text>
-                <TouchableOpacity onPress={openQuitEdit} hitSlop={8}>
-                  <Text style={s.budgetLink}>기준 바꾸기 ›</Text>
-                </TouchableOpacity>
-              </View>
-              <Text style={[s.total, { color: C.green }]}>{won(savedTotal)}원</Text>
-              <Text style={s.projLine}>
-                술 하루 {won(quitSet.soberPerDay)}원 × {soberDays}일 · 담배 하루 {quitSet.cigsPerDay}개비(갑 {won(quitSet.packPrice)}원) × {smokeDays}일
-              </Text>
-              {quitEdit && (
-                <View style={{ marginTop: 6 }}>
-                  <Text style={s.budLabel}>하루 평균 술값 (원)</Text>
-                  <TextInput style={s.input} keyboardType="number-pad" placeholderTextColor={C.faint}
-                    value={quitDraft.soberPerDay} onChangeText={v => setQuitDraft(d => ({ ...d, soberPerDay: v }))} />
-                  <Text style={s.budLabel}>하루 피우던 담배 (개비)</Text>
-                  <TextInput style={s.input} keyboardType="number-pad" placeholderTextColor={C.faint}
-                    value={quitDraft.cigsPerDay} onChangeText={v => setQuitDraft(d => ({ ...d, cigsPerDay: v }))} />
-                  <Text style={s.budLabel}>담배 한 갑 가격 (원)</Text>
-                  <TextInput style={s.input} keyboardType="number-pad" placeholderTextColor={C.faint}
-                    value={quitDraft.packPrice} onChangeText={v => setQuitDraft(d => ({ ...d, packPrice: v }))} />
-                  <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={saveQuitDraft}>
-                    <Text style={s.bigBtnT}>저장</Text>
-                  </TouchableOpacity>
-                </View>
-              )}
-            </View>
-
-            {/* 이 돈이면 살 수 있어요 */}
-            <View style={s.statCard}>
-              <Text style={s.statTitle}>이 돈이면 살 수 있어요 🛒</Text>
-              {SHOP_ITEMS.map(it => {
-                const v = savedTotal / it.price;
-                const can = v >= 1;
-                const shown = v >= 10 ? String(Math.floor(v)) : (Math.floor(v * 10) / 10).toString();
-                return (
-                  <View key={it.name} style={s.shopRow}>
-                    <Text style={s.shopEmoji}>{it.emoji}</Text>
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                      <Text style={s.shopName}>{it.name}</Text>
-                      <View style={s.shopBarBg}>
-                        <View style={[s.shopBarFill, {
-                          width: `${Math.min(100, v * 100)}%`,
-                          backgroundColor: can ? C.green : '#3A3F4A',
-                        }]} />
-                      </View>
-                    </View>
-                    <Text style={[s.shopCount, can && { color: C.green }]}>
-                      {can ? `${shown}${it.unit} 가능!` : `${shown}${it.unit} (${Math.round(v*100)}%)`}
-                    </Text>
-                  </View>
-                );
-              })}
-              <Text style={s.statEmpty}>가격은 대략적인 기준이에요 · 하루하루 지날수록 올라가요 📈</Text>
-            </View>
-
-            {/* 일기장 */}
-            <View style={s.statCard}>
-              <Text style={s.statTitle}>금주·금연 일기 ✍️</Text>
-              <TextInput style={[s.input, { minHeight: 70, textAlignVertical: 'top', marginTop: 0 }]} multiline
-                placeholder="오늘 어땠나요? (예: 회식이었는데 사이다로 버텼다. 뿌듯함)"
-                placeholderTextColor={C.faint} value={diaryText} onChangeText={setDiaryText} />
-              <TouchableOpacity style={[s.bigBtn, { backgroundColor: C.green }]} activeOpacity={0.85} onPress={submitDiary}>
-                <Text style={s.bigBtnT}>기록하기</Text>
-              </TouchableOpacity>
-              {diary.length === 0 && <Text style={[s.statEmpty, { marginTop: 14 }]}>첫 일기를 남겨보세요. 나중에 다시 읽으면 힘이 돼요.</Text>}
-              {diary.map(d => {
-                const dt = new Date(d.ts);
-                return (
-                  <TouchableOpacity key={d.id} style={s.diaryRow} activeOpacity={0.7}
-                    onLongPress={() => confirmDiaryDelete(d)} delayLongPress={450}>
-                    <Text style={s.diaryDate}>{dt.getMonth()+1}월 {dt.getDate()}일 {hhmm(d.ts)} · {diaryDayNo(d.ts)}일째</Text>
-                    <Text style={s.diaryText}>{d.text}</Text>
-                  </TouchableOpacity>
-                );
-              })}
-              {diary.length > 0 && <Text style={s.statEmpty}>일기를 길게 누르면 삭제돼요</Text>}
-            </View>
-          </ScrollView>
-        </SafeAreaView>
-      </Modal>
-
       {/* 예산 설정 모달 */}
       <Modal visible={budgetOpen} transparent animationType="slide" onRequestClose={() => setBudgetOpen(false)}>
         <TouchableOpacity style={s.modalBg} activeOpacity={1} onPress={() => setBudgetOpen(false)}>
@@ -898,7 +964,15 @@ export default function App() {
 
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
-  scroll: { padding: 20, paddingBottom: 110 },
+  scroll: { padding: 20, paddingBottom: 150 },
+  bottomBar: { position: 'absolute', left: 16, right: 16, bottom: 14, flexDirection: 'row', backgroundColor: C.card, borderRadius: 22, paddingVertical: 9, elevation: 10, shadowColor: '#000', shadowOpacity: 0.35, shadowRadius: 14, shadowOffset: { width: 0, height: 6 } },
+  bottomTab: { flex: 1, alignItems: 'center', gap: 2 },
+  bottomTabT: { color: C.faint, fontSize: 11, fontWeight: '700' },
+  diaryStatsRow: { flexDirection: 'row', gap: 10, marginBottom: 12 },
+  diaryStat: { flex: 1, backgroundColor: C.card, borderRadius: 16, paddingVertical: 14, alignItems: 'center' },
+  diaryStatV: { color: C.text, fontSize: 18, fontWeight: '800', letterSpacing: -0.4 },
+  diaryStatL: { color: C.faint, fontSize: 11.5, marginTop: 2 },
+  diaryMonth: { color: C.sub, fontSize: 13, fontWeight: '700', marginBottom: 8, marginLeft: 4, marginTop: 4 },
   topRow: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', marginTop: 10, marginBottom: 16 },
   appTitle: { color: C.text, fontSize: 22, fontWeight: '800', letterSpacing: -0.5 },
   appSub: { color: C.faint, fontSize: 13 },
@@ -1009,7 +1083,7 @@ const s = StyleSheet.create({
   testBtnT: { color: C.sub, fontWeight: '700', fontSize: 13 },
   hint: { color: C.faint, fontSize: 12, lineHeight: 18, marginTop: 12, textAlign: 'center' },
 
-  fab: { position: 'absolute', right: 20, bottom: 26, width: 56, height: 56, borderRadius: 28, backgroundColor: C.blue, alignItems: 'center', justifyContent: 'center', elevation: 8, shadowColor: C.blue, shadowOpacity: 0.4, shadowRadius: 12, shadowOffset: { width: 0, height: 4 } },
+  fab: { position: 'absolute', right: 22, bottom: 88, width: 56, height: 56, borderRadius: 28, backgroundColor: C.blue, alignItems: 'center', justifyContent: 'center', elevation: 8, shadowColor: C.blue, shadowOpacity: 0.4, shadowRadius: 12, shadowOffset: { width: 0, height: 4 } },
   fabT: { color: '#fff', fontSize: 26, fontWeight: '600', marginTop: -2 },
 
   modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'flex-end' },
