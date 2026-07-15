@@ -76,6 +76,11 @@
   .sheet h3 { font-size:19px; font-weight:800; letter-spacing:-.02em; }
   .sheet .st { font-size:28px; font-weight:800; letter-spacing:-.03em; margin:2px 0 10px; }
   .sheet .list { max-height:50vh; overflow-y:auto; }
+  .cheer-in { display:block; width:100%; background:#26262C; border:none; border-radius:14px; color:#E5E8EB; padding:13px 15px; font-size:14.5px; font-family:inherit; margin-top:10px; resize:none; }
+  .cheer-in:focus-visible { outline:2px solid #3182F6; }
+  .cheer-btn { all:unset; cursor:pointer; display:block; width:100%; box-sizing:border-box; text-align:center; background:#3182F6; color:#fff; font-weight:800; font-size:15px; border-radius:14px; padding:14px 0; margin-top:10px; }
+  .cheer-btn:disabled { opacity:.5; }
+  .cheer-note { color:#6B7684; font-size:11.5px; margin-top:9px; text-align:center; line-height:1.5; }
   @media (prefers-reduced-motion:reduce){ *{transition:none !important} }
 </style>
 </head>
@@ -112,6 +117,14 @@
     <div class="cal-head"><span>일</span><span>월</span><span>화</span><span>수</span><span>목</span><span>금</span><span>토</span></div>
     <div class="cal-grid" id="calGrid"></div>
     <div class="cal-hint">날짜를 누르면 그날 쓴 내역이 보여요</div>
+  </div>
+
+  <div class="month" style="margin-top:6px">
+    <div class="mtitle">은성이에게 응원 한마디 💌</div>
+    <input class="cheer-in" id="cheerName" placeholder="이름 (선택)" maxlength="20">
+    <textarea class="cheer-in" id="cheerText" placeholder="응원 메시지를 남겨주세요. 은성이 앱에만 보여요!" rows="3" maxlength="300"></textarea>
+    <button class="cheer-btn" id="cheerBtn">보내기</button>
+    <div class="cheer-note" id="cheerNote">여기 남긴 메시지는 이 페이지에 표시되지 않고, 은성이만 볼 수 있어요.</div>
   </div>
 </div>
 
@@ -304,6 +317,29 @@ document.getElementById('calGrid').addEventListener('click', e => {
   document.body.classList.add('open');
 });
 document.getElementById('scrim').onclick = () => document.body.classList.remove('open');
+
+// 응원 보내기 (cheers 테이블 — 페이지에는 표시 안 함, 앱에서만 보임)
+document.getElementById('cheerBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('cheerBtn');
+  const note = document.getElementById('cheerNote');
+  const name = document.getElementById('cheerName').value.trim();
+  const text = document.getElementById('cheerText').value.trim();
+  if (!text) { note.textContent = '메시지를 입력해주세요!'; return; }
+  btn.disabled = true;
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/cheers`, {
+      method: 'POST',
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2,7), ts: new Date().toISOString(), name: name || null, text }),
+    });
+    if (!res.ok) throw new Error();
+    document.getElementById('cheerText').value = '';
+    note.textContent = '전달했어요! 은성이만 볼 수 있어요 💌';
+  } catch (e) {
+    note.textContent = '전송에 실패했어요. 잠시 후 다시 시도해주세요.';
+  }
+  btn.disabled = false;
+});
 
 fetchAll();
 setInterval(fetchAll, 60000);
