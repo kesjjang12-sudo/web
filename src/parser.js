@@ -21,7 +21,9 @@ const STOPWORDS = [
 
 export function parsePayment(rawText) {
   if (!rawText) return null;
-  let text = rawText.replace(/\n/g, ' ').trim();
+  // 눈에 안 보이는 방향제어/폭없는 문자 제거 (문자 발신번호에 섞여 들어와 필터를 피해감)
+  let text = rawText.replace(/[\u2066-\u2069\u200b-\u200f\u202a-\u202e\ufeff\u00ad]/g, '')
+    .replace(/\n/g, ' ').trim();
 
   // 누적/잔액/한도 금액은 결제 금액이 아니므로 먼저 제거
   // (예: "네이버파이낸셜 승인 120원 누적1,093,380원" → 누적 부분 삭제)
@@ -33,9 +35,9 @@ export function parsePayment(rawText) {
   const isPayment = /승인|결제|사용|출금/.test(text);
   if (!isPayment) return null;
   if (/취소/.test(text)) return null; // 결제취소 알림 제외
-  // 카드값이 통장에서 빠져나가는 알림은 제외 (개별 카드 결제가 이미 기록돼서 이중집계됨)
+  // 카드값/요금이 통장에서 빠져나가는 알림은 제외 (개별 카드 결제가 이미 기록돼서 이중집계됨)
   if (/카드대금|카드값/.test(text)) return null;
-  if (/회원님[\s\S]{0,25}출금/.test(text)) return null; // "회원님, ○○은행에서 483,975원 출금되었습니다"
+  if (/출금되었습니다/.test(text)) return null; // "○○월 출금되었습니다", "회원님 ... 출금되었습니다" 등 청구서형 문자
 
   const amount = parseInt(amountMatch[1].replace(/,/g, ''), 10);
   if (!amount || amount < 100) return null;

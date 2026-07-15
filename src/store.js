@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config';
-import { guessCategory } from './parser';
+import { guessCategory, parsePayment } from './parser';
 
 const KEY = 'payments_v1';
 const MERCHANT_CAT_KEY = 'merchant_categories_v1';
@@ -53,11 +53,21 @@ export async function getPayments() {
   try {
     const raw = await AsyncStorage.getItem(KEY);
     const list = raw ? JSON.parse(raw) : [];
-    // 예전 버전(클린/실패) 기록 마이그레이션: category 없으면 추측해서 채움
     let migrated = false;
+    // 예전 버전(클린/실패) 기록 마이그레이션: category 없으면 추측해서 채움
     const memory = await getMerchantMap();
     for (const p of list) {
       if (!p.category) { p.category = guessCategory(p.merchant, memory); migrated = true; }
+    }
+    // 파서 개선 후 1회 재분석: 잘못 잡힌 이름 교정, 이제 걸러야 하는 알림(카드값 출금 등)은 삭제 처리
+    if (!(await AsyncStorage.getItem('reparse_v1_done'))) {
+      for (const p of list) {
+        if (!p.raw || p.deleted || p.app === 'manual' || p.type === 'income') continue;
+        const re = parsePayment(p.raw);
+        if (!re) { p.deleted = true; migrated = true; }
+        else if (re.merchant !== p.merchant && re.merchant !== '알수없음') { p.merchant = re.merchant; migrated = true; }
+      }
+      await AsyncStorage.setItem('reparse_v1_done', '1');
     }
     if (migrated) await AsyncStorage.setItem(KEY, JSON.stringify(list));
     return list;
