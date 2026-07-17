@@ -1,3 +1,4 @@
+import 'react-native-url-polyfill/auto';
 import { AppRegistry } from 'react-native';
 import { registerRootComponent } from 'expo';
 import { RNAndroidNotificationListenerHeadlessJsName } from 'react-native-android-notification-listener';

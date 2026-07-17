@@ -53,6 +53,8 @@
   .m-memo { font-size:12.5px; color:#E5B84B; margin-top:3px; line-height:1.35; }
   .m-amt { font-weight:700; font-size:15.5px; letter-spacing:-.02em; }
   .empty { color:#8B95A1; text-align:center; padding:34px 0; font-size:14px; line-height:22px; }
+  .need-token { margin-top:40px; }
+  .content { display:none; }
 
   /* 달력 */
   .cal { background:#17171C; border-radius:20px; padding:14px 10px 10px; margin-bottom:12px; display:none; }
@@ -95,45 +97,50 @@
 </head>
 <body>
 <div class="wrap">
-  <div class="title">클린<em>페이</em> · 가계부</div>
+  <div class="title" id="pageTitle">클린<em>페이</em> · 가계부</div>
   <div class="sub" id="updated">불러오는 중...</div>
-
-  <div class="ddays">
-    <div class="dday sober"><div class="tag">금주</div><div class="num" id="ddaySober">-</div><div class="since" id="sinceSober"></div></div>
-    <div class="dday smoke"><div class="tag">금연</div><div class="num" id="ddaySmoke">-</div><div class="since" id="sinceSmoke"></div></div>
+  <div class="need-token" id="needToken" style="display:none">
+    <div class="empty">🔗 이 페이지는 공유 링크가 있어야 볼 수 있어요.<br>링크를 보내준 사람에게 다시 요청해주세요.</div>
   </div>
 
-  <div class="month">
-    <div class="mnav">
-      <button id="prevM" aria-label="이전 달">‹</button>
-      <span class="mt" id="mnavT">-</span>
-      <button id="nextM" aria-label="다음 달">›</button>
+  <div class="content" id="content">
+    <div class="ddays">
+      <div class="dday sober"><div class="tag">금주</div><div class="num" id="ddaySober">-</div><div class="since" id="sinceSober"></div></div>
+      <div class="dday smoke"><div class="tag">금연</div><div class="num" id="ddaySmoke">-</div><div class="since" id="sinceSmoke"></div></div>
     </div>
-    <div class="mtitle" id="mtitle">이번 달 쓴 돈</div>
-    <div class="total" id="total">-</div>
-    <div class="delta" id="delta"></div>
-    <div class="cats" id="cats"></div>
-  </div>
 
-  <div class="tabs">
-    <button class="tab on" id="tabList">내역</button>
-    <button class="tab" id="tabCal">달력</button>
-  </div>
+    <div class="month">
+      <div class="mnav">
+        <button id="prevM" aria-label="이전 달">‹</button>
+        <span class="mt" id="mnavT">-</span>
+        <button id="nextM" aria-label="다음 달">›</button>
+      </div>
+      <div class="mtitle" id="mtitle">이번 달 쓴 돈</div>
+      <div class="total" id="total">-</div>
+      <div class="delta" id="delta"></div>
+      <div class="cats" id="cats"></div>
+    </div>
 
-  <div id="list"><div class="empty">불러오는 중...</div></div>
+    <div class="tabs">
+      <button class="tab on" id="tabList">내역</button>
+      <button class="tab" id="tabCal">달력</button>
+    </div>
 
-  <div class="cal" id="cal">
-    <div class="cal-head"><span>일</span><span>월</span><span>화</span><span>수</span><span>목</span><span>금</span><span>토</span></div>
-    <div class="cal-grid" id="calGrid"></div>
-    <div class="cal-hint">날짜를 누르면 그날 쓴 내역이 보여요</div>
-  </div>
+    <div id="list"><div class="empty">불러오는 중...</div></div>
 
-  <div class="month" style="margin-top:6px">
-    <div class="mtitle">은성이에게 응원 한마디 💌</div>
-    <input class="cheer-in" id="cheerName" placeholder="이름 (선택)" maxlength="20">
-    <textarea class="cheer-in" id="cheerText" placeholder="응원 메시지를 남겨주세요. 은성이 앱에만 보여요!" rows="3" maxlength="300"></textarea>
-    <button class="cheer-btn" id="cheerBtn">보내기</button>
-    <div class="cheer-note" id="cheerNote">여기 남긴 메시지는 이 페이지에 표시되지 않고, 은성이만 볼 수 있어요.</div>
+    <div class="cal" id="cal">
+      <div class="cal-head"><span>일</span><span>월</span><span>화</span><span>수</span><span>목</span><span>금</span><span>토</span></div>
+      <div class="cal-grid" id="calGrid"></div>
+      <div class="cal-hint">날짜를 누르면 그날 쓴 내역이 보여요</div>
+    </div>
+
+    <div class="month" style="margin-top:6px">
+      <div class="mtitle" id="cheerTitle">응원 한마디 💌</div>
+      <input class="cheer-in" id="cheerName" placeholder="이름 (선택)" maxlength="20">
+      <textarea class="cheer-in" id="cheerText" placeholder="응원 메시지를 남겨주세요. 상대방 앱에만 보여요!" rows="3" maxlength="300"></textarea>
+      <button class="cheer-btn" id="cheerBtn">보내기</button>
+      <div class="cheer-note" id="cheerNote">여기 남긴 메시지는 이 페이지에 표시되지 않고, 링크 주인만 볼 수 있어요.</div>
+    </div>
   </div>
 </div>
 
@@ -154,11 +161,19 @@
 </div>
 
 <script>
-// ▼▼▼ 여기만 채우면 됩니다 (앱의 config.js와 동일한 값) ▼▼▼
 const SUPABASE_URL = 'https://zzdztiakkfetwzivunyy.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_IZqj43JnqNPjuYFsW0yLOQ_3-HjIQL7';
-const QUIT = { sober: '2026-07-13', smoke: '2026-07-13' };  // 금주/금연 시작일
-// ▲▲▲
+const TOKEN = new URLSearchParams(location.search).get('u');
+
+async function rpc(name, body){
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${name}`, {
+    method: 'POST',
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
 
 const CATS = {
   food:   {label:'식비',      color:'#F2917A'},
@@ -195,27 +210,47 @@ function dayLabel(d){
   return diff === 0 ? base+' · 오늘' : diff === 1 ? base+' · 어제' : base+' · '+DAYS[d.getDay()]+'요일';
 }
 
-// D-day는 데이터 없이도 표시
-for (const [k, from] of Object.entries(QUIT)) {
-  const id = k === 'sober' ? 'Sober' : 'Smoke';
-  document.getElementById('dday'+id).textContent = daysSince(from) + '일째';
-  const [, m, d] = from.split('-').map(Number);
-  document.getElementById('since'+id).textContent = `${m}월 ${d}일부터`;
-}
-
 let allRows = [];        // 최근 6개월치
 let monthOffset = 0;     // 0=이번달, -1=지난달
 let view = 'list';
 
+function showDday(sober, smoke){
+  for (const [id, from] of [['Sober', sober], ['Smoke', smoke]]) {
+    if (!from) { document.getElementById('dday'+id).textContent = '-'; continue; }
+    document.getElementById('dday'+id).textContent = daysSince(from) + '일째';
+    const [, m, d] = from.split('-').map(Number);
+    document.getElementById('since'+id).textContent = `${m}월 ${d}일부터`;
+  }
+}
+
 async function fetchAll(){
-  const now = new Date();
-  const since = new Date(now.getFullYear(), now.getMonth()-6, 1).toISOString();
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/payments?ts=gte.${since}&order=ts.desc&limit=2000&select=*`, {
-    headers:{ apikey:SUPABASE_ANON_KEY, Authorization:`Bearer ${SUPABASE_ANON_KEY}` }
-  });
-  allRows = await res.json();
-  document.getElementById('updated').textContent = '업데이트: ' + new Date().toLocaleString('ko-KR');
-  render();
+  if (!TOKEN) {
+    document.getElementById('needToken').style.display = 'block';
+    document.getElementById('updated').textContent = '';
+    return;
+  }
+  try {
+    const [profileRows, paymentRows] = await Promise.all([
+      rpc('shared_profile', { p_token: TOKEN }),
+      rpc('shared_payments', { p_token: TOKEN }),
+    ]);
+    const profile = profileRows[0];
+    if (!profile) {
+      document.getElementById('needToken').style.display = 'block';
+      document.getElementById('updated').textContent = '링크가 유효하지 않아요.';
+      return;
+    }
+    document.getElementById('pageTitle').innerHTML = `클린<em>페이</em> · ${profile.display_name || '가계부'}`;
+    document.getElementById('cheerTitle').textContent = `${profile.display_name || '이 사람'}에게 응원 한마디 💌`;
+    document.getElementById('cheerNote').textContent = `여기 남긴 메시지는 이 페이지에 표시되지 않고, ${profile.display_name || '링크 주인'}만 볼 수 있어요.`;
+    showDday(profile.sober_start, profile.smoke_start);
+    allRows = paymentRows;
+    document.getElementById('content').style.display = 'block';
+    document.getElementById('updated').textContent = '업데이트: ' + new Date().toLocaleString('ko-KR');
+    render();
+  } catch (e) {
+    document.getElementById('updated').textContent = '불러오는 데 실패했어요. 잠시 후 다시 시도해주세요.';
+  }
 }
 
 const inMonth = (r, ym) => { const d = new Date(r.ts); return d.getFullYear() === ym.getFullYear() && d.getMonth() === ym.getMonth(); };
@@ -342,14 +377,10 @@ document.getElementById('cheerBtn').addEventListener('click', async () => {
   const name = document.getElementById('cheerName').value.trim();
   const text = document.getElementById('cheerText').value.trim();
   if (!text) { note.textContent = '메시지를 입력해주세요!'; return; }
+  if (!TOKEN) { note.textContent = '공유 링크로 열어야 응원을 보낼 수 있어요.'; return; }
   btn.disabled = true;
   try {
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/cheers`, {
-      method: 'POST',
-      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2,7), ts: new Date().toISOString(), name: name || null, text }),
-    });
-    if (!res.ok) throw new Error();
+    await rpc('send_cheer', { p_token: TOKEN, p_name: name, p_text: text });
     document.getElementById('cheerText').value = '';
     showDone();
   } catch (e) {

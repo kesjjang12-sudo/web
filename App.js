@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   SafeAreaView, View, Text, TouchableOpacity, ScrollView, StyleSheet,
-  Alert, Modal, TextInput, AppState, RefreshControl, Share,
+  Alert, Modal, TextInput, AppState, RefreshControl, Share, ActivityIndicator, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import RNAndroidNotificationListener from 'react-native-android-notification-listener';
@@ -10,9 +10,14 @@ import {
   syncAll, getBudgets, saveBudgets,
   getDiary, addDiary, deleteDiary, getQuitSettings, saveQuitSettings,
   getExplanations, saveExplanation, fetchCheers, deleteCheer,
+  getQuitDates, saveQuitDates,
 } from './src/store';
 import { parsePayment } from './src/parser';
 import { QUIT_GOALS, CATEGORIES, SHOP_ITEMS, SUPABASE_URL } from './src/config';
+import { hasSupabase } from './src/supabase';
+import { getSession, onAuthChange, signUp, signIn, signOut, getMyProfile } from './src/auth';
+
+const SHARE_BASE_URL = 'https://kesjjang12-sudo.github.io/web/';
 
 // 토스 스타일 다크 팔레트
 const C = {
@@ -20,7 +25,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r17'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r18'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const LOCK_LIMIT = 100000;   // 하루 이만큼 넘게 쓰면 소명 요청
 const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
 // 건강 회복 타임라인 (일 기준)
@@ -43,6 +48,7 @@ const HEALTH_SMOKE = [
   { d: 365, t: '심장병 위험이 절반으로 줄어요' },
 ];
 const dkey = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+const todayISO = () => dkey(new Date());
 // 금액 입력창에 콤마 자동 표시 (10000 → 10,000)
 const fmtInput = v => { const n = String(v).replace(/[^\d]/g, ''); return n ? Number(n).toLocaleString('ko-KR') : ''; };
 const CAT = Object.fromEntries(CATEGORIES.map(c => [c.key, c]));
@@ -81,7 +87,99 @@ const srcName = app => !app || app === 'manual' ? '직접 입력' : app === 'tes
 
 const isIncome = p => p.type === 'income';
 
-export default function App() {
+export default function Root() {
+  const [checking, setChecking] = useState(true);
+  const [session, setSession] = useState(null);
+  const [profile, setProfile] = useState(null);
+
+  useEffect(() => {
+    if (!hasSupabase) { setChecking(false); return; }
+    const afterLogin = async () => {
+      const p = await getMyProfile();
+      setProfile(p);
+      // 서버에 시작일이 아직 없으면(신규 가입 or 예전 기록 마이그레이션) 로컬 값을 올려줌
+      if (p && p.sober_start == null) {
+        const dates = await getQuitDates();
+        await saveQuitDates(dates);
+        setProfile({ ...p, sober_start: dates.sober, smoke_start: dates.smoke });
+      }
+    };
+    getSession().then(async (s) => {
+      setSession(s);
+      if (s) await afterLogin();
+      setChecking(false);
+    });
+    const sub = onAuthChange(async (s) => {
+      setSession(s);
+      if (s) await afterLogin(); else setProfile(null);
+    });
+    return () => sub.unsubscribe();
+  }, []);
+
+  if (!hasSupabase) return <MainApp profile={null} onSignOut={null} />;
+  if (checking) {
+    return (
+      <SafeAreaView style={[s.root, { alignItems: 'center', justifyContent: 'center' }]}>
+        <ActivityIndicator color={C.blue} />
+      </SafeAreaView>
+    );
+  }
+  if (!session) return <AuthScreen />;
+  return <MainApp profile={profile} onSignOut={async () => { await signOut(); }} />;
+}
+
+function AuthScreen() {
+  const [mode, setMode] = useState('signin'); // 'signin' | 'signup'
+  const [email, setEmail] = useState('');
+  const [pw, setPw] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const submit = useCallback(async () => {
+    if (!email.trim() || pw.length < 6) { setErr('이메일과 6자 이상 비밀번호를 입력해주세요.'); return; }
+    setErr(''); setBusy(true);
+    try {
+      if (mode === 'signup') await signUp(email, pw);
+      else await signIn(email, pw);
+    } catch (e) {
+      setErr(
+        /already registered|already exists/i.test(e.message) ? '이미 가입된 이메일이에요. 로그인해주세요.'
+        : /invalid login/i.test(e.message) ? '이메일 또는 비밀번호가 올바르지 않아요.'
+        : e.message || '문제가 생겼어요. 다시 시도해주세요.'
+      );
+    } finally { setBusy(false); }
+  }, [mode, email, pw]);
+
+  return (
+    <SafeAreaView style={s.root}>
+      <StatusBar style="light" />
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+        <View style={[s.scroll, { flex: 1, justifyContent: 'center' }]}>
+          <Text style={s.authTitle}>클린페이</Text>
+          <Text style={s.authSub}>{mode === 'signup' ? '계정을 만들고 시작해요' : '로그인하고 계속하기'}</Text>
+
+          <TextInput style={s.input} placeholder="이메일" placeholderTextColor={C.faint}
+            autoCapitalize="none" keyboardType="email-address" value={email} onChangeText={setEmail} />
+          <TextInput style={s.input} placeholder="비밀번호 (6자 이상)" placeholderTextColor={C.faint}
+            secureTextEntry value={pw} onChangeText={setPw} />
+          {!!err && <Text style={s.authErr}>{err}</Text>}
+
+          <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={submit} disabled={busy}>
+            {busy ? <ActivityIndicator color="#fff" /> : <Text style={s.bigBtnT}>{mode === 'signup' ? '계정 만들기' : '로그인'}</Text>}
+          </TouchableOpacity>
+
+          <TouchableOpacity style={{ marginTop: 18 }} onPress={() => { setErr(''); setMode(m => m === 'signup' ? 'signin' : 'signup'); }}>
+            <Text style={s.authSwitch}>
+              {mode === 'signup' ? '이미 계정이 있어요 → 로그인' : '처음이에요 → 계정 만들기'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
+
+function MainApp({ profile, onSignOut }) {
   const [perm, setPerm] = useState('unknown');
   const [payments, setPayments] = useState([]);
   const [budgets, setBudgets] = useState({ total: 0, cats: {} });
@@ -108,19 +206,37 @@ export default function App() {
   const [quitSet, setQuitSet] = useState({ soberPerDay: 15000, cigsPerDay: 10, packPrice: 4500 });
   const [quitEdit, setQuitEdit] = useState(false);
   const [quitDraft, setQuitDraft] = useState({ soberPerDay: '', cigsPerDay: '', packPrice: '' });
+  const [quitDates, setQuitDates] = useState(() => { const t = todayISO(); return { sober: t, smoke: t }; });
+  const [dateEdit, setDateEdit] = useState(false);
+  const [dateDraft, setDateDraft] = useState({ sober: '', smoke: '' });
+  const [dateErr, setDateErr] = useState('');
   const [explanations, setExplanations] = useState({});
   const [explainText, setExplainText] = useState('');
   const [cheers, setCheers] = useState([]);
   const [crisisOpen, setCrisisOpen] = useState(false);
   const [crisisEntry, setCrisisEntry] = useState(null);
+  const [shareOpen, setShareOpen] = useState(false);
+  const shareLink = profile?.share_token ? `${SHARE_BASE_URL}?u=${profile.share_token}` : '';
+
+  const shareLinkNative = useCallback(() => {
+    if (!shareLink) return;
+    Share.share({ message: `내 가계부·D-day를 실시간으로 볼 수 있어요 💙\n${shareLink}` });
+  }, [shareLink]);
+
+  const confirmSignOut = useCallback(() => {
+    Alert.alert('로그아웃 할까요?', '', [
+      { text: '취소', style: 'cancel' },
+      { text: '로그아웃', style: 'destructive', onPress: () => { setShareOpen(false); onSignOut && onSignOut(); } },
+    ]);
+  }, [onSignOut]);
 
   const load = useCallback(async () => {
-    const [p, b, d, q, ex, ch, st] = await Promise.all([
-      getPayments(), getBudgets(), getDiary(), getQuitSettings(),
+    const [p, b, d, q, qd, ex, ch, st] = await Promise.all([
+      getPayments(), getBudgets(), getDiary(), getQuitSettings(), getQuitDates(),
       getExplanations(), fetchCheers(),
       RNAndroidNotificationListener.getPermissionStatus(),
     ]);
-    setPayments(p); setBudgets(b); setDiary(d); setQuitSet(q);
+    setPayments(p); setBudgets(b); setDiary(d); setQuitSet(q); setQuitDates(qd);
     setExplanations(ex); setCheers(ch); setPerm(st);
   }, []);
 
@@ -394,8 +510,8 @@ export default function App() {
   }, [payments]);
 
   // ── 마일스톤 ──
-  const soberDaysNow = daysSince(QUIT_GOALS[0].start);
-  const smokeDaysNow = daysSince(QUIT_GOALS[1].start);
+  const soberDaysNow = daysSince(quitDates.sober);
+  const smokeDaysNow = daysSince(quitDates.smoke);
   const milestoneToday = [];
   if (MILESTONES.includes(soberDaysNow)) milestoneToday.push(`금주 ${soberDaysNow}일`);
   if (MILESTONES.includes(smokeDaysNow)) milestoneToday.push(`금연 ${smokeDaysNow}일`);
@@ -414,8 +530,8 @@ export default function App() {
   }, []);
 
   // ── 금주·금연 아낀 돈 ──
-  const soberDays = daysSince(QUIT_GOALS[0].start);
-  const smokeDays = daysSince(QUIT_GOALS[1].start);
+  const soberDays = daysSince(quitDates.sober);
+  const smokeDays = daysSince(quitDates.smoke);
   const savedSober = Math.max(0, soberDays) * quitSet.soberPerDay;
   const savedSmoke = Math.max(0, smokeDays) * Math.round(quitSet.cigsPerDay / 20 * quitSet.packPrice);
   const savedTotal = savedSober + savedSmoke;
@@ -423,7 +539,7 @@ export default function App() {
   // 일기 쓴 날이 금주 며칠째였는지
   const diaryDayNo = (iso) => {
     const d = new Date(iso);
-    const [y, m, dd] = QUIT_GOALS[0].start.split('-').map(Number);
+    const [y, m, dd] = quitDates.sober.split('-').map(Number);
     const t = new Date(d.getFullYear(), d.getMonth(), d.getDate());
     return Math.round((t - new Date(y, m - 1, dd)) / 86400000) + 1;
   };
@@ -470,6 +586,20 @@ export default function App() {
       { text: '삭제', style: 'destructive', onPress: async () => setDiary(await deleteDiary(d.id)) },
     ]);
   }, []);
+
+  const openDateEdit = useCallback(() => {
+    setDateDraft({ sober: quitDates.sober, smoke: quitDates.smoke }); setDateErr(''); setDateEdit(true);
+  }, [quitDates]);
+
+  const saveDateEdit = useCallback(async () => {
+    const ok = /^\d{4}-\d{2}-\d{2}$/;
+    if (!ok.test(dateDraft.sober) || !ok.test(dateDraft.smoke)
+      || isNaN(new Date(dateDraft.sober)) || isNaN(new Date(dateDraft.smoke))) {
+      setDateErr('YYYY-MM-DD 형식으로 입력해주세요 (예: 2026-07-13)'); return;
+    }
+    await saveQuitDates(dateDraft);
+    setQuitDates(dateDraft); setDateEdit(false);
+  }, [dateDraft]);
 
   const openQuitEdit = useCallback(() => {
     setQuitDraft({
@@ -537,7 +667,14 @@ export default function App() {
 
         <View style={s.topRow}>
           <Text style={s.appTitle}>클린페이</Text>
-          <Text style={s.appSub}>은성의 가계부 · {REV}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <Text style={s.appSub}>{profile?.display_name || '나'}의 가계부 · {REV}</Text>
+            {hasSupabase && (
+              <TouchableOpacity onPress={() => setShareOpen(true)} hitSlop={8}>
+                <Text style={{ fontSize: 16 }}>⚙️</Text>
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
 
         {perm !== 'authorized' && (
@@ -559,9 +696,10 @@ export default function App() {
         {/* D-day 카드 (탭 → 아낀 돈 + 일기장) */}
         <View style={s.ddayRow}>
           {QUIT_GOALS.map((g, i) => {
-            const days = daysSince(g.start);
+            const start = i === 0 ? quitDates.sober : quitDates.smoke;
+            const days = daysSince(start);
             const color = i === 0 ? C.green : C.blueText;
-            const [, sm, sd] = g.start.split('-').map(Number);
+            const [, sm, sd] = start.split('-').map(Number);
             return (
               <TouchableOpacity key={g.key} style={s.dday} activeOpacity={0.7} onPress={() => setScreen('save')}>
                 <Text style={s.ddayTag}>{g.label}</Text>
@@ -881,6 +1019,23 @@ export default function App() {
         {nextMs && (
           <Text style={s.savedTeaser}>다음 목표 🎯 {nextMs}일까지 <Text style={{ color: C.blueText, fontWeight: '800' }}>D-{nextMs - Math.min(soberDaysNow, smokeDaysNow)}</Text></Text>
         )}
+        <TouchableOpacity activeOpacity={0.7} onPress={openDateEdit} style={{ alignSelf: 'center', marginBottom: 12 }}>
+          <Text style={s.budgetLink}>시작일 바꾸기 ›</Text>
+        </TouchableOpacity>
+        {dateEdit && (
+          <View style={[s.statCard, { paddingTop: 16 }]}>
+            <Text style={s.budLabel}>금주 시작일 (YYYY-MM-DD)</Text>
+            <TextInput style={s.input} placeholder="2026-07-13" placeholderTextColor={C.faint}
+              value={dateDraft.sober} onChangeText={v => setDateDraft(d => ({ ...d, sober: v }))} />
+            <Text style={s.budLabel}>금연 시작일 (YYYY-MM-DD)</Text>
+            <TextInput style={s.input} placeholder="2026-07-13" placeholderTextColor={C.faint}
+              value={dateDraft.smoke} onChangeText={v => setDateDraft(d => ({ ...d, smoke: v }))} />
+            {!!dateErr && <Text style={s.authErr}>{dateErr}</Text>}
+            <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={saveDateEdit}>
+              <Text style={s.bigBtnT}>저장</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* 위기 버튼 */}
         <TouchableOpacity style={s.crisisBtn} activeOpacity={0.85} onPress={openCrisis}>
@@ -1140,6 +1295,27 @@ export default function App() {
         </TouchableOpacity>
       </Modal>
 
+      {/* 설정 / 공유 링크 모달 */}
+      <Modal visible={shareOpen} transparent animationType="slide" onRequestClose={() => setShareOpen(false)}>
+        <TouchableOpacity style={s.modalBg} activeOpacity={1} onPress={() => setShareOpen(false)}>
+          <View style={s.modalCard} onStartShouldSetResponder={() => true}>
+            <View style={s.grabber} />
+            <Text style={s.modalTitle}>내 공유 링크 🔗</Text>
+            <Text style={s.modalSub}>이 링크를 보내면 상대방이 내 D-day와 지출을 실시간으로 볼 수 있어요.{'\n'}(계좌·카드 정보는 보이지 않아요)</Text>
+            <View style={s.shareLinkBox}>
+              <TextInput style={s.shareLinkT} value={shareLink || '링크를 만드는 중...'} editable={false} selectTextOnFocus multiline />
+            </View>
+            <Text style={s.shareLinkHint}>길게 눌러서 직접 복사할 수도 있어요</Text>
+            <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={shareLinkNative} disabled={!shareLink}>
+              <Text style={s.bigBtnT}>카톡 등으로 보내기</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={{ marginTop: 20, alignItems: 'center' }} onPress={confirmSignOut}>
+              <Text style={{ color: C.red, fontWeight: '700', fontSize: 14 }}>로그아웃</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
       {/* 🚨 고액 지출 소명 모달 (소명 전까지 안 닫힘) */}
       <Modal visible={!!lockTarget} transparent animationType="fade" onRequestClose={() => {}}>
         <View style={s.modalBg}>
@@ -1385,4 +1561,12 @@ const s = StyleSheet.create({
   input: { backgroundColor: C.card2, borderRadius: 14, color: C.text, padding: 15, marginTop: 10, fontSize: 15.5 },
   bigBtn: { backgroundColor: C.blue, borderRadius: 14, padding: 16, alignItems: 'center', marginTop: 14 },
   bigBtnT: { color: '#fff', fontWeight: '800', fontSize: 16 },
+
+  authTitle: { color: C.text, fontSize: 30, fontWeight: '800', textAlign: 'center', letterSpacing: -0.6 },
+  authSub: { color: C.sub, fontSize: 14, textAlign: 'center', marginTop: 6, marginBottom: 28 },
+  authErr: { color: C.red, fontSize: 13, marginTop: 10, textAlign: 'center' },
+  authSwitch: { color: C.blueText, fontSize: 13.5, fontWeight: '700', textAlign: 'center' },
+  shareLinkBox: { backgroundColor: C.card2, borderRadius: 14, padding: 15, marginTop: 4 },
+  shareLinkT: { color: C.blueText, fontSize: 13.5, fontWeight: '600' },
+  shareLinkHint: { color: C.faint, fontSize: 11.5, marginTop: 6, textAlign: 'center' },
 });

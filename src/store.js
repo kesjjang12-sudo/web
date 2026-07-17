@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config';
 import { guessCategory, parsePayment } from './parser';
+import { supabase, hasSupabase } from './supabase';
 
 const KEY = 'payments_v1';
 const MERCHANT_CAT_KEY = 'merchant_categories_v1';
@@ -25,6 +25,32 @@ export async function deleteDiary(id) {
   const next = (await getDiary()).filter(d => d.id !== id);
   await AsyncStorage.setItem(DIARY_KEY, JSON.stringify(next));
   return next;
+}
+
+// ---------------- 금주/금연 시작일 (사용자별로 다름 — 처음엔 오늘로 설정) ----------------
+const QUIT_DATES_KEY = 'quit_dates_v1';
+
+export async function getQuitDates() {
+  try {
+    const raw = await AsyncStorage.getItem(QUIT_DATES_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  // 이 키가 없다는 건 이전 버전(고정 시작일 2026-07-13)에서 막 올라왔거나 새 설치라는 뜻.
+  // 기존 사용자의 진행일수가 갑자기 리셋되지 않도록 이전 고정값을 기본값으로 사용.
+  // 새로 설치한 사람은 "아낀돈 탭 → 시작일 바꾸기"에서 본인 날짜로 바꾸면 됨.
+  const def = { sober: '2026-07-13', smoke: '2026-07-13' };
+  await AsyncStorage.setItem(QUIT_DATES_KEY, JSON.stringify(def));
+  return def;
+}
+
+export async function saveQuitDates(dates) {
+  await AsyncStorage.setItem(QUIT_DATES_KEY, JSON.stringify(dates));
+  if (!hasSupabase) return;
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+    await supabase.from('profiles').update({ sober_start: dates.sober, smoke_start: dates.smoke }).eq('id', user.id);
+  } catch (e) { /* 오프라인이면 무시, 다음 저장 때 재시도됨 */ }
 }
 
 // ---------------- 아낀 돈 계산 기준 (하루 술값 / 담배 개비 / 갑 가격) ----------------
@@ -157,61 +183,43 @@ export async function saveExplanation(dateKey, text) {
   return map;
 }
 
-// ---------------- 응원 메시지 (웹페이지에서 작성 → 앱에서만 보임) ----------------
+// ---------------- 응원 메시지 (웹페이지에서 작성 → 로그인한 나만 볼 수 있음) ----------------
 export async function fetchCheers() {
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return [];
+  if (!hasSupabase) return [];
   try {
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/cheers?order=ts.desc&limit=100&select=*`, {
-      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
-    });
-    if (!res.ok) return []; // 테이블이 아직 없으면 조용히 무시
-    return await res.json();
+    const { data, error } = await supabase.from('cheers').select('*').order('ts', { ascending: false }).limit(100);
+    if (error) return [];
+    return data || [];
   } catch { return []; }
 }
 export async function deleteCheer(id) {
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
-  try {
-    await fetch(`${SUPABASE_URL}/rest/v1/cheers?id=eq.${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
-    });
-  } catch (e) { /* 무시 */ }
+  if (!hasSupabase) return;
+  try { await supabase.from('cheers').delete().eq('id', id); } catch (e) { /* 무시 */ }
 }
 
-// ---------------- Supabase 동기화 ----------------
+// ---------------- Supabase 동기화 (로그인한 사용자 소유로 저장) ----------------
 export async function syncToSupabase(record) {
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+  if (!hasSupabase) return;
   if (record.type === 'income') return; // 수입은 폰에만 기록 (웹 페이지는 지출 전용)
   if (record.deleted) return;           // 삭제된 항목은 웹에 안 보이게
   try {
-    await fetch(`${SUPABASE_URL}/rest/v1/payments`, {
-      method: 'POST',
-      headers: {
-        apikey: SUPABASE_ANON_KEY,
-        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-        'Content-Type': 'application/json',
-        Prefer: 'resolution=merge-duplicates',
-      },
-      body: JSON.stringify({
-        id: record.id,
-        ts: record.ts,
-        merchant: record.merchant,
-        amount: record.amount,
-        category: record.category || 'etc',
-        memo: record.memo || null,
-      }),
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return; // 로그인 전에는 동기화하지 않음 (로컬에는 그대로 남아있음)
+    await supabase.from('payments').upsert({
+      id: record.id,
+      ts: record.ts,
+      merchant: record.merchant,
+      amount: record.amount,
+      category: record.category || 'etc',
+      memo: record.memo || null,
+      user_id: user.id,
     });
   } catch (e) { /* 오프라인이면 무시. 다음 앱 실행 시 syncAll로 재전송 */ }
 }
 
 async function deleteFromSupabase(id) {
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
-  try {
-    await fetch(`${SUPABASE_URL}/rest/v1/payments?id=eq.${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
-    });
-  } catch (e) { /* 무시 */ }
+  if (!hasSupabase) return;
+  try { await supabase.from('payments').delete().eq('id', id); } catch (e) { /* 무시 */ }
 }
 
 export async function syncAll() {
