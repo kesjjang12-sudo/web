@@ -20,7 +20,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r16'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r17'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const LOCK_LIMIT = 100000;   // 하루 이만큼 넘게 쓰면 소명 요청
 const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
 // 건강 회복 타임라인 (일 기준)
@@ -90,7 +90,7 @@ export default function App() {
   const [view, setView] = useState('list');          // 'list' | 'cal' | 'stat'
   const [selDay, setSelDay] = useState(null);        // 달력에서 선택한 일자
   const [search, setSearch] = useState('');
-  const [filterCat, setFilterCat] = useState(null);  // null=전체
+  const [filterCats, setFilterCats] = useState([]);  // 체크한 카테고리들 (빈 배열=전체)
   const [pickTarget, setPickTarget] = useState(null); // 수정할 기록
   const [editCat, setEditCat] = useState('etc');
   const [editMemo, setEditMemo] = useState('');
@@ -183,11 +183,20 @@ export default function App() {
   const listPays = useMemo(() => {
     const all = [...monthPays, ...monthIncome].sort((a,b) => new Date(b.ts) - new Date(a.ts));
     return all.filter(p => {
-      if (filterCat && (isIncome(p) || (CAT[p.category] ? p.category : 'etc') !== filterCat)) return false;
+      if (filterCats.length > 0 && (isIncome(p) || !filterCats.includes(CAT[p.category] ? p.category : 'etc'))) return false;
       if (search.trim() && !(p.merchant + (p.memo||'')).toLowerCase().includes(search.trim().toLowerCase())) return false;
       return true;
     });
-  }, [monthPays, monthIncome, search, filterCat]);
+  }, [monthPays, monthIncome, search, filterCats]);
+
+  // 체크한 카테고리 합계 (검색어와 무관하게, 이 달 전체 기준)
+  const filterSum = useMemo(() => {
+    if (filterCats.length === 0) return null;
+    return monthPays.filter(p => filterCats.includes(CAT[p.category] ? p.category : 'etc')).reduce((s, p) => s + p.amount, 0);
+  }, [monthPays, filterCats]);
+  const toggleFilterCat = useCallback((k) => {
+    setFilterCats(cs => cs.includes(k) ? cs.filter(x => x !== k) : [...cs, k]);
+  }, []);
 
   const groups = useMemo(() => {
     const g = [];
@@ -669,17 +678,30 @@ export default function App() {
             <TextInput style={s.searchInput} placeholder="🔍 가게 이름이나 메모 검색" placeholderTextColor={C.faint}
               value={search} onChangeText={setSearch} />
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.filterRow} keyboardShouldPersistTaps="handled">
-              <TouchableOpacity style={[s.filterChip, !filterCat && s.filterChipOn]} onPress={() => setFilterCat(null)}>
-                <Text style={[s.filterChipT, !filterCat && { color: C.text }]}>전체</Text>
+              <TouchableOpacity style={[s.filterChip, filterCats.length === 0 && s.filterChipOn]} onPress={() => setFilterCats([])}>
+                <Text style={[s.filterChipT, filterCats.length === 0 && { color: C.text }]}>전체</Text>
               </TouchableOpacity>
-              {CATEGORIES.map(c => (
-                <TouchableOpacity key={c.key} style={[s.filterChip, filterCat === c.key && s.filterChipOn]}
-                  onPress={() => setFilterCat(filterCat === c.key ? null : c.key)}>
-                  <View style={[s.chipDot, { backgroundColor: c.color }]} />
-                  <Text style={[s.filterChipT, filterCat === c.key && { color: C.text }]}>{c.label}</Text>
-                </TouchableOpacity>
-              ))}
+              {CATEGORIES.map(c => {
+                const on = filterCats.includes(c.key);
+                return (
+                  <TouchableOpacity key={c.key} style={[s.filterChip, on && s.filterChipOn]} onPress={() => toggleFilterCat(c.key)}>
+                    <View style={[s.checkbox, on && { backgroundColor: c.color, borderColor: c.color }]}>
+                      {on && <Text style={s.checkboxMark}>✓</Text>}
+                    </View>
+                    <Text style={[s.filterChipT, on && { color: C.text }]}>{c.label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
             </ScrollView>
+            {filterSum !== null && (
+              <View style={s.filterSumCard}>
+                <Text style={s.filterSumLabel}>
+                  {filterCats.map(k => CAT[k].label).join(' + ')} 합계
+                </Text>
+                <Text style={s.filterSumAmt}>{won(filterSum)}원</Text>
+                <Text style={s.filterSumPct}>이 달 전체의 {total > 0 ? Math.round(filterSum / total * 100) : 0}%</Text>
+              </View>
+            )}
             {groups.map(g => {
               const gk = dkey(new Date(g.items[0].ts));
               return (
@@ -696,7 +718,7 @@ export default function App() {
               );
             })}
             {listPays.length === 0 && (
-              <Text style={s.empty}>{search || filterCat ? '조건에 맞는 기록이 없어요.' : '아직 이 달 기록이 없어요.\n카드 결제 알림이 오면 자동으로 쌓이고,\n현금은 아래 + 버튼으로 직접 추가할 수 있어요.'}</Text>
+              <Text style={s.empty}>{search || filterCats.length > 0 ? '조건에 맞는 기록이 없어요.' : '아직 이 달 기록이 없어요.\n카드 결제 알림이 오면 자동으로 쌓이고,\n현금은 아래 + 버튼으로 직접 추가할 수 있어요.'}</Text>
             )}
           </>
         )}
@@ -1293,6 +1315,12 @@ const s = StyleSheet.create({
   filterChip: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: C.card, borderRadius: 99, paddingHorizontal: 13, paddingVertical: 8, marginRight: 8 },
   filterChipOn: { backgroundColor: C.card2 },
   filterChipT: { color: C.faint, fontSize: 13, fontWeight: '700' },
+  checkbox: { width: 15, height: 15, borderRadius: 4, borderWidth: 1.5, borderColor: C.faint, alignItems: 'center', justifyContent: 'center' },
+  checkboxMark: { color: '#0B0D10', fontSize: 10, fontWeight: '900' },
+  filterSumCard: { backgroundColor: C.card, borderRadius: 16, padding: 16, marginBottom: 12, alignItems: 'center' },
+  filterSumLabel: { color: C.sub, fontSize: 13, fontWeight: '600' },
+  filterSumAmt: { color: C.text, fontSize: 26, fontWeight: '800', marginTop: 4, letterSpacing: -0.5 },
+  filterSumPct: { color: C.faint, fontSize: 12, marginTop: 3 },
   chipDot: { width: 8, height: 8, borderRadius: 99 },
 
   dayCard: { backgroundColor: C.card, borderRadius: 20, paddingHorizontal: 18, paddingVertical: 8, marginBottom: 12 },
