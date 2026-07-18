@@ -25,7 +25,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r18'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r19'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const LOCK_LIMIT = 100000;   // 하루 이만큼 넘게 쓰면 소명 요청
 const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
 // 건강 회복 타임라인 (일 기준)
@@ -94,26 +94,42 @@ export default function Root() {
 
   useEffect(() => {
     if (!hasSupabase) { setChecking(false); return; }
+
+    // 프로필/시작일 동기화는 실패해도 앱 진입을 막지 않음 (네트워크 문제로 영원히 로딩에 갇히는 것 방지)
     const afterLogin = async () => {
-      const p = await getMyProfile();
-      setProfile(p);
-      // 서버에 시작일이 아직 없으면(신규 가입 or 예전 기록 마이그레이션) 로컬 값을 올려줌
-      if (p && p.sober_start == null) {
-        const dates = await getQuitDates();
-        await saveQuitDates(dates);
-        setProfile({ ...p, sober_start: dates.sober, smoke_start: dates.smoke });
-      }
+      try {
+        const p = await getMyProfile();
+        setProfile(p);
+        if (p && p.sober_start == null) {
+          const dates = await getQuitDates();
+          await saveQuitDates(dates);
+          setProfile({ ...p, sober_start: dates.sober, smoke_start: dates.smoke });
+        }
+      } catch (e) { /* 다음 앱 실행이나 화면 재진입 때 다시 시도됨 */ }
     };
-    getSession().then(async (s) => {
-      setSession(s);
-      if (s) await afterLogin();
-      setChecking(false);
-    });
+
+    let cancelled = false;
+    const withTimeout = (p, ms) => Promise.race([
+      p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms)),
+    ]);
+    (async () => {
+      try {
+        const s = await withTimeout(getSession(), 8000);
+        if (cancelled) return;
+        setSession(s);
+        if (s) await afterLogin();
+      } catch (e) {
+        // 세션 확인 자체가 실패해도(오프라인 등) 로그인 화면으로 보내서 재시도할 수 있게 함
+      } finally {
+        if (!cancelled) setChecking(false);
+      }
+    })();
+
     const sub = onAuthChange(async (s) => {
       setSession(s);
       if (s) await afterLogin(); else setProfile(null);
     });
-    return () => sub.unsubscribe();
+    return () => { cancelled = true; sub.unsubscribe(); };
   }, []);
 
   if (!hasSupabase) return <MainApp profile={null} onSignOut={null} />;
