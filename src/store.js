@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { guessCategory, parsePayment } from './parser';
 import { supabase, hasSupabase } from './supabase';
+import { occurrencesSince, sinceAnchor } from './recurring';
 
 const KEY = 'payments_v1';
 const MERCHANT_CAT_KEY = 'merchant_categories_v1';
@@ -166,6 +167,84 @@ export async function getMerchantMap() {
     const raw = await AsyncStorage.getItem(MERCHANT_CAT_KEY);
     return raw ? JSON.parse(raw) : {};
   } catch { return {}; }
+}
+
+// ---------------- 고정지출(정기결제) ----------------
+const RECUR_KEY = 'recurring_v1';
+
+export async function getRecurring() {
+  try {
+    const raw = await AsyncStorage.getItem(RECUR_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+async function saveRecurringList(list) {
+  await AsyncStorage.setItem(RECUR_KEY, JSON.stringify(list));
+}
+
+// tpl: { merchant, amount, category, memo?, cycle:'monthly'|'daily'|'custom', dayOfMonth?, intervalDays?, startDate:'YYYY-MM-DD' }
+// fromPaymentId를 넘기면 그 결제는 이미 기록된 것으로 보고 다음 주기부터 자동 생성함 (중복 생성 방지)
+export async function addRecurring(tpl, fromPaymentId) {
+  const list = await getRecurring();
+  const rec = {
+    id: `rc_${Date.now()}`, active: true,
+    lastGenerated: fromPaymentId ? tpl.startDate : null,
+    ...tpl,
+  };
+  const next = [rec, ...list];
+  await saveRecurringList(next);
+  if (fromPaymentId) await linkPaymentToRecurring(fromPaymentId, rec.id);
+  return next;
+}
+
+export async function updateRecurring(id, patch) {
+  const list = await getRecurring();
+  const rec = list.find(r => r.id === id);
+  if (!rec) return list;
+  Object.assign(rec, patch);
+  await saveRecurringList(list);
+  return list;
+}
+
+export async function deleteRecurring(id) {
+  const next = (await getRecurring()).filter(r => r.id !== id);
+  await saveRecurringList(next);
+  return next;
+}
+
+async function linkPaymentToRecurring(paymentId, recurringId) {
+  const list = await getPayments();
+  const rec = list.find(p => p.id === paymentId);
+  if (!rec) return;
+  rec.recurringId = recurringId;
+  await AsyncStorage.setItem(KEY, JSON.stringify(list));
+}
+
+// 등록된 고정지출 중 도래한 주기를 자동으로 지출 내역에 추가 (앱 시작 시 호출)
+export async function runRecurringGenerator() {
+  const list = await getRecurring();
+  if (!list.length) return false;
+  const today = new Date();
+  const todayMid = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  let changed = false;
+  for (const tpl of list) {
+    if (!tpl.active) continue;
+    const since = sinceAnchor(tpl);
+    const occ = occurrencesSince(tpl, since, todayMid);
+    if (!occ.length) continue;
+    for (const d of occ) {
+      const ts = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 9, 0, 0).toISOString();
+      await savePayment({
+        id: `r_${tpl.id}_${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`,
+        ts, merchant: tpl.merchant, amount: tpl.amount, category: tpl.category,
+        memo: tpl.memo || undefined, app: 'recurring', recurringId: tpl.id,
+      });
+    }
+    tpl.lastGenerated = `${occ[occ.length-1].getFullYear()}-${String(occ[occ.length-1].getMonth()+1).padStart(2,'0')}-${String(occ[occ.length-1].getDate()).padStart(2,'0')}`;
+    changed = true;
+  }
+  if (changed) await saveRecurringList(list);
+  return changed;
 }
 
 // ---------------- 고액 지출 소명 (하루 10만원 이상) ----------------

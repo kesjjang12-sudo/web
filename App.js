@@ -11,7 +11,9 @@ import {
   getDiary, addDiary, deleteDiary, getQuitSettings, saveQuitSettings,
   getExplanations, saveExplanation, fetchCheers, deleteCheer,
   getQuitDates, saveQuitDates,
+  getRecurring, addRecurring, updateRecurring, deleteRecurring, runRecurringGenerator,
 } from './src/store';
+import { cycleLabel, nextDueLabel } from './src/recurring';
 import { parsePayment } from './src/parser';
 import { QUIT_GOALS, CATEGORIES, SHOP_ITEMS, SUPABASE_URL } from './src/config';
 import { hasSupabase } from './src/supabase';
@@ -25,7 +27,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r19'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r20'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const LOCK_LIMIT = 100000;   // 하루 이만큼 넘게 쓰면 소명 요청
 const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
 // 건강 회복 타임라인 (일 기준)
@@ -81,7 +83,7 @@ function daysSince(start) {
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   return Math.round((today - s) / 86400000) + 1;
 }
-const srcName = app => !app || app === 'manual' ? '직접 입력' : app === 'test' ? '테스트'
+const srcName = app => !app || app === 'manual' ? '직접 입력' : app === 'test' ? '테스트' : app === 'recurring' ? '고정지출'
   : /messaging/.test(app) ? '문자'
   : /kakaobank|kbstar|sbanking/.test(app) ? '은행' : '카드 알림';
 
@@ -226,6 +228,11 @@ function MainApp({ profile, onSignOut }) {
   const [dateEdit, setDateEdit] = useState(false);
   const [dateDraft, setDateDraft] = useState({ sober: '', smoke: '' });
   const [dateErr, setDateErr] = useState('');
+  const [recurList, setRecurList] = useState([]);
+  const [recurOpen, setRecurOpen] = useState(false);
+  const [recurEditId, setRecurEditId] = useState(null); // null = 새로 추가
+  const [recurDraft, setRecurDraft] = useState(null);
+  const [recurErr, setRecurErr] = useState('');
   const [explanations, setExplanations] = useState({});
   const [explainText, setExplainText] = useState('');
   const [cheers, setCheers] = useState([]);
@@ -247,13 +254,14 @@ function MainApp({ profile, onSignOut }) {
   }, [onSignOut]);
 
   const load = useCallback(async () => {
-    const [p, b, d, q, qd, ex, ch, st] = await Promise.all([
+    await runRecurringGenerator(); // 도래한 고정지출을 먼저 자동 기록
+    const [p, b, d, q, qd, ex, ch, rec, st] = await Promise.all([
       getPayments(), getBudgets(), getDiary(), getQuitSettings(), getQuitDates(),
-      getExplanations(), fetchCheers(),
+      getExplanations(), fetchCheers(), getRecurring(),
       RNAndroidNotificationListener.getPermissionStatus(),
     ]);
     setPayments(p); setBudgets(b); setDiary(d); setQuitSet(q); setQuitDates(qd);
-    setExplanations(ex); setCheers(ch); setPerm(st);
+    setExplanations(ex); setCheers(ch); setRecurList(rec); setPerm(st);
   }, []);
 
   useEffect(() => {
@@ -384,6 +392,66 @@ function MainApp({ profile, onSignOut }) {
       .filter(([m, v]) => prv[m] && Math.abs(v - prv[m]) / Math.max(v, prv[m]) <= 0.2)
       .sort((a,b) => b[1]-a[1]);
   }, [payments, monthOffset]);
+
+  // ── 고정지출 ──
+  const openRecurAdd = useCallback(() => {
+    setRecurEditId(null); setRecurErr('');
+    setRecurDraft({
+      merchant: '', amount: '', category: 'sub', memo: '',
+      cycle: 'monthly', dayOfMonth: String(new Date().getDate()), intervalDays: '7',
+      startDate: todayISO(), fromPaymentId: null,
+    });
+    setRecurOpen(true);
+  }, []);
+
+  const openRecurFromPayment = useCallback((p) => {
+    const d = new Date(p.ts);
+    setRecurEditId(null); setRecurErr('');
+    setRecurDraft({
+      merchant: p.merchant, amount: fmtInput(p.amount), category: CAT[p.category] ? p.category : 'etc', memo: '',
+      cycle: 'monthly', dayOfMonth: String(d.getDate()), intervalDays: '7',
+      startDate: dkey(d), fromPaymentId: p.id,
+    });
+    setPickTarget(null);
+    setRecurOpen(true);
+  }, []);
+
+  const openRecurEdit = useCallback((tpl) => {
+    setRecurEditId(tpl.id); setRecurErr('');
+    setRecurDraft({
+      merchant: tpl.merchant, amount: fmtInput(tpl.amount), category: tpl.category, memo: tpl.memo || '',
+      cycle: tpl.cycle, dayOfMonth: String(tpl.dayOfMonth || new Date().getDate()), intervalDays: String(tpl.intervalDays || 7),
+      startDate: tpl.startDate, fromPaymentId: null,
+    });
+    setRecurOpen(true);
+  }, []);
+
+  const saveRecurDraft = useCallback(async () => {
+    const d = recurDraft;
+    const amount = parseInt(String(d.amount).replace(/[^\d]/g, ''), 10);
+    if (!d.merchant.trim() || !amount) { setRecurErr('이름과 금액을 입력해주세요.'); return; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d.startDate) || isNaN(new Date(d.startDate))) { setRecurErr('시작일 형식을 확인해주세요 (YYYY-MM-DD)'); return; }
+    if (d.cycle === 'monthly' && (d.dayOfMonth < 1 || d.dayOfMonth > 31)) { setRecurErr('날짜는 1~31 사이여야 해요.'); return; }
+    if (d.cycle === 'custom' && (!d.intervalDays || Number(d.intervalDays) < 1)) { setRecurErr('며칠마다인지 1 이상으로 입력해주세요.'); return; }
+
+    const tpl = {
+      merchant: d.merchant.trim(), amount, category: d.category, memo: d.memo.trim(),
+      cycle: d.cycle, dayOfMonth: Number(d.dayOfMonth), intervalDays: Number(d.intervalDays), startDate: d.startDate,
+    };
+    let next;
+    if (recurEditId) next = await updateRecurring(recurEditId, tpl);
+    else next = await addRecurring(tpl, d.fromPaymentId);
+    setRecurList([...next]);
+    if (d.fromPaymentId) setPayments([...await getPayments()]); // 원본 결제에 붙는 배지 반영
+    setRecurOpen(false);
+  }, [recurDraft, recurEditId]);
+
+  const confirmRecurDelete = useCallback(() => {
+    Alert.alert('고정지출을 삭제할까요?', '이미 기록된 지출 내역은 그대로 남아요.', [
+      { text: '취소', style: 'cancel' },
+      { text: '삭제', style: 'destructive', onPress: async () => { setRecurList([...await deleteRecurring(recurEditId)]); setRecurOpen(false); } },
+    ]);
+  }, [recurEditId]);
 
   // ── 액션 ──
   const openEdit = useCallback((p) => {
@@ -665,7 +733,7 @@ function MainApp({ profile, onSignOut }) {
           <View style={[s.dotCore, { backgroundColor: cat.color }]} />
         </View>
         <View style={{ flex: 1, minWidth: 0 }}>
-          <Text style={s.itemName} numberOfLines={1}>{p.merchant}</Text>
+          <Text style={s.itemName} numberOfLines={1}>{p.recurringId ? '📌 ' : ''}{p.merchant}</Text>
           <Text style={s.itemSub}>{hhmm(p.ts)} · {srcName(p.app)} · {cat.label}</Text>
           {!!p.memo && <Text style={s.itemMemo} numberOfLines={2}>{p.memo}</Text>}
         </View>
@@ -816,6 +884,34 @@ function MainApp({ profile, onSignOut }) {
             </Text>
           </View>
         )}
+
+        {/* 고정지출 */}
+        <View style={s.dayCard}>
+          <View style={s.dayHead}>
+            <Text style={s.dayHeadT}>📌 고정지출 {recurList.length > 0 ? `${recurList.length}건` : ''}</Text>
+            <TouchableOpacity onPress={openRecurAdd} hitSlop={8}>
+              <Text style={s.budgetLink}>+ 추가</Text>
+            </TouchableOpacity>
+          </View>
+          {recurList.length === 0 && (
+            <Text style={[s.statEmpty, { paddingBottom: 10 }]}>넷플릭스, 월세처럼 반복되는 지출을 등록해두면{'\n'}주기마다 자동으로 기록돼요.</Text>
+          )}
+          {recurList.map(tpl => {
+            const cat = CAT[tpl.category] || CAT.etc;
+            return (
+              <TouchableOpacity key={tpl.id} style={s.item} activeOpacity={0.6} onPress={() => openRecurEdit(tpl)}>
+                <View style={[s.dot, { backgroundColor: cat.color + '26' }]}>
+                  <View style={[s.dotCore, { backgroundColor: cat.color }]} />
+                </View>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={s.itemName} numberOfLines={1}>{tpl.merchant}</Text>
+                  <Text style={s.itemSub}>{cycleLabel(tpl)} · {nextDueLabel(tpl)}{!tpl.active ? ' · 일시정지' : ''}</Text>
+                </View>
+                <Text style={s.itemAmt}>{won(tpl.amount)}원</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
 
         {/* 뷰 전환 탭 */}
         <View style={s.tabs}>
@@ -1269,6 +1365,15 @@ function MainApp({ profile, onSignOut }) {
             <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={saveEdit}>
               <Text style={s.bigBtnT}>저장</Text>
             </TouchableOpacity>
+            {pickTarget && !isIncome(pickTarget) && (
+              pickTarget.recurringId ? (
+                <Text style={s.recurLinkedHint}>📌 이미 고정지출로 등록되어 있어요</Text>
+              ) : (
+                <TouchableOpacity style={{ marginTop: 14, alignItems: 'center' }} onPress={() => openRecurFromPayment(pickTarget)}>
+                  <Text style={s.recurConvertT}>📌 고정지출로 등록하기</Text>
+                </TouchableOpacity>
+              )
+            )}
           </View>
         </TouchableOpacity>
       </Modal>
@@ -1411,6 +1516,76 @@ function MainApp({ profile, onSignOut }) {
             <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={saveBudgetDraft}>
               <Text style={s.bigBtnT}>저장</Text>
             </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* 고정지출 추가/수정 모달 */}
+      <Modal visible={recurOpen} transparent animationType="slide" onRequestClose={() => setRecurOpen(false)}>
+        <TouchableOpacity style={s.modalBg} activeOpacity={1} onPress={() => setRecurOpen(false)}>
+          <View style={s.modalCard} onStartShouldSetResponder={() => true}>
+            <View style={s.grabber} />
+            <Text style={s.modalTitle}>{recurEditId ? '고정지출 수정' : '고정지출 추가'}</Text>
+            <Text style={s.modalSub}>주기가 돌아올 때마다 자동으로 지출이 기록돼요.</Text>
+            {recurDraft && (
+              <ScrollView style={{ maxHeight: 420 }} keyboardShouldPersistTaps="handled">
+                <TextInput style={s.input} placeholder="이름 (예: 넷플릭스, 월세)" placeholderTextColor={C.faint}
+                  value={recurDraft.merchant} onChangeText={v => setRecurDraft(d => ({ ...d, merchant: v }))} />
+                <TextInput style={s.input} placeholder="금액 (원)" placeholderTextColor={C.faint} keyboardType="number-pad"
+                  value={recurDraft.amount} onChangeText={v => setRecurDraft(d => ({ ...d, amount: fmtInput(v) }))} />
+
+                <View style={s.catGrid}>
+                  {CATEGORIES.map(c => (
+                    <TouchableOpacity key={c.key} activeOpacity={0.7}
+                      style={[s.catBtn, recurDraft.category === c.key && s.catBtnOn]}
+                      onPress={() => setRecurDraft(d => ({ ...d, category: c.key }))}>
+                      <View style={[s.catBtnDot, { backgroundColor: c.color }]} />
+                      <Text style={[s.catBtnT, recurDraft.category === c.key && { color: C.text }]}>{c.label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                <Text style={s.budLabel}>주기</Text>
+                <View style={s.tabs}>
+                  {[['monthly','매월'],['daily','매일'],['custom','사용자 설정']].map(([k, label]) => (
+                    <TouchableOpacity key={k} style={[s.tab, recurDraft.cycle === k && s.tabOn]}
+                      onPress={() => setRecurDraft(d => ({ ...d, cycle: k }))}>
+                      <Text style={[s.tabT, recurDraft.cycle === k && s.tabTOn]}>{label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                {recurDraft.cycle === 'monthly' && (
+                  <>
+                    <Text style={s.budLabel}>매월 며칠 (1~31)</Text>
+                    <TextInput style={s.input} keyboardType="number-pad" placeholderTextColor={C.faint}
+                      value={recurDraft.dayOfMonth} onChangeText={v => setRecurDraft(d => ({ ...d, dayOfMonth: v.replace(/[^\d]/g,'') }))} />
+                  </>
+                )}
+                {recurDraft.cycle === 'custom' && (
+                  <>
+                    <Text style={s.budLabel}>며칠마다</Text>
+                    <TextInput style={s.input} keyboardType="number-pad" placeholderTextColor={C.faint}
+                      value={recurDraft.intervalDays} onChangeText={v => setRecurDraft(d => ({ ...d, intervalDays: v.replace(/[^\d]/g,'') }))} />
+                  </>
+                )}
+                <Text style={s.budLabel}>시작일 (YYYY-MM-DD)</Text>
+                <TextInput style={s.input} placeholder="2026-07-15" placeholderTextColor={C.faint}
+                  value={recurDraft.startDate} onChangeText={v => setRecurDraft(d => ({ ...d, startDate: v }))} />
+                <TextInput style={s.input} placeholder="메모 (선택)" placeholderTextColor={C.faint}
+                  value={recurDraft.memo} onChangeText={v => setRecurDraft(d => ({ ...d, memo: v }))} />
+
+                {!!recurErr && <Text style={s.authErr}>{recurErr}</Text>}
+              </ScrollView>
+            )}
+            <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={saveRecurDraft}>
+              <Text style={s.bigBtnT}>저장</Text>
+            </TouchableOpacity>
+            {recurEditId && (
+              <TouchableOpacity style={{ marginTop: 16, alignItems: 'center' }} onPress={confirmRecurDelete}>
+                <Text style={{ color: C.red, fontWeight: '700', fontSize: 14 }}>고정지출 삭제</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </TouchableOpacity>
       </Modal>
@@ -1581,6 +1756,8 @@ const s = StyleSheet.create({
   authTitle: { color: C.text, fontSize: 30, fontWeight: '800', textAlign: 'center', letterSpacing: -0.6 },
   authSub: { color: C.sub, fontSize: 14, textAlign: 'center', marginTop: 6, marginBottom: 28 },
   authErr: { color: C.red, fontSize: 13, marginTop: 10, textAlign: 'center' },
+  recurLinkedHint: { color: C.faint, fontSize: 12.5, marginTop: 14, textAlign: 'center' },
+  recurConvertT: { color: C.blueText, fontWeight: '700', fontSize: 13.5 },
   authSwitch: { color: C.blueText, fontSize: 13.5, fontWeight: '700', textAlign: 'center' },
   shareLinkBox: { backgroundColor: C.card2, borderRadius: 14, padding: 15, marginTop: 4 },
   shareLinkT: { color: C.blueText, fontSize: 13.5, fontWeight: '600' },
