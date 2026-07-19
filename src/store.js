@@ -16,9 +16,11 @@ export async function getDiary() {
     return raw ? JSON.parse(raw) : [];
   } catch { return []; }
 }
-export async function addDiary(text) {
+export async function addDiary(text, ts) {
   const list = await getDiary();
-  const next = [{ id: `d_${Date.now()}`, ts: new Date().toISOString(), text }, ...list].slice(0, 1000);
+  const next = [{ id: `d_${Date.now()}`, ts: ts || new Date().toISOString(), text }, ...list]
+    .sort((a, b) => new Date(b.ts) - new Date(a.ts))
+    .slice(0, 1000);
   await AsyncStorage.setItem(DIARY_KEY, JSON.stringify(next));
   return next;
 }

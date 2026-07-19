@@ -27,7 +27,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r20'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r21'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const LOCK_LIMIT = 100000;   // 하루 이만큼 넘게 쓰면 소명 요청
 const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
 // 건강 회복 타임라인 (일 기준)
@@ -221,6 +221,10 @@ function MainApp({ profile, onSignOut }) {
   const [screen, setScreen] = useState('home');      // 'home' | 'save' | 'diary' (하단 탭)
   const [diary, setDiary] = useState([]);
   const [diaryText, setDiaryText] = useState('');
+  const [diaryView, setDiaryView] = useState('list'); // 'list' | 'cal'
+  const [diaryMonthOffset, setDiaryMonthOffset] = useState(0);
+  const [diarySelDay, setDiarySelDay] = useState(null);
+  const [diarySheetText, setDiarySheetText] = useState('');
   const [quitSet, setQuitSet] = useState({ soberPerDay: 15000, cigsPerDay: 10, packPrice: 4500 });
   const [quitEdit, setQuitEdit] = useState(false);
   const [quitDraft, setQuitDraft] = useState({ soberPerDay: '', cigsPerDay: '', packPrice: '' });
@@ -670,6 +674,40 @@ function MainApp({ profile, onSignOut }) {
       { text: '삭제', style: 'destructive', onPress: async () => setDiary(await deleteDiary(d.id)) },
     ]);
   }, []);
+
+  // ── 일기 달력 ──
+  const diaryViewYM = new Date(now.getFullYear(), now.getMonth() + diaryMonthOffset, 1);
+  const diaryIsThisMonth = diaryMonthOffset === 0;
+  const diaryCal = useMemo(() => {
+    const y = diaryViewYM.getFullYear(), m = diaryViewYM.getMonth();
+    const daysInM = new Date(y, m + 1, 0).getDate();
+    const firstDow = new Date(y, m, 1).getDay();
+    const counts = {};
+    diary.forEach(d => {
+      const dt = new Date(d.ts);
+      if (dt.getFullYear() === y && dt.getMonth() === m) { const day = dt.getDate(); counts[day] = (counts[day]||0) + 1; }
+    });
+    const cells = [];
+    for (let i = 0; i < firstDow; i++) cells.push(null);
+    for (let day = 1; day <= daysInM; day++) cells.push({ d: day, count: counts[day] || 0 });
+    while (cells.length % 7 !== 0) cells.push(null);
+    return cells;
+  }, [diary, diaryMonthOffset]);
+
+  const diarySelEntries = useMemo(() => {
+    if (diarySelDay == null) return [];
+    return diary.filter(d => {
+      const dt = new Date(d.ts);
+      return dt.getFullYear() === diaryViewYM.getFullYear() && dt.getMonth() === diaryViewYM.getMonth() && dt.getDate() === diarySelDay;
+    }).sort((a, b) => new Date(b.ts) - new Date(a.ts));
+  }, [diary, diarySelDay, diaryMonthOffset]);
+
+  const submitDiaryForDay = useCallback(async () => {
+    if (!diarySheetText.trim() || diarySelDay == null) return;
+    const d = new Date(diaryViewYM.getFullYear(), diaryViewYM.getMonth(), diarySelDay, 12, 0, 0);
+    setDiary(await addDiary(diarySheetText.trim(), d.toISOString()));
+    setDiarySheetText('');
+  }, [diarySheetText, diarySelDay, diaryMonthOffset]);
 
   const openDateEdit = useCallback(() => {
     setDateDraft({ sober: quitDates.sober, smoke: quitDates.smoke }); setDateErr(''); setDateEdit(true);
@@ -1274,39 +1312,94 @@ function MainApp({ profile, onSignOut }) {
           <View style={s.diaryStat}><Text style={s.diaryStatV}>{diaryStats.total}개</Text><Text style={s.diaryStatL}>전체</Text></View>
         </View>
 
-        <View style={s.statCard}>
-          <TextInput style={[s.input, { minHeight: 70, textAlignVertical: 'top', marginTop: 0 }]} multiline
-            placeholder="오늘 어땠나요? (예: 회식이었는데 사이다로 버텼다. 뿌듯함)"
-            placeholderTextColor={C.faint} value={diaryText} onChangeText={setDiaryText} />
-          <TouchableOpacity style={[s.bigBtn, { backgroundColor: C.green }]} activeOpacity={0.85} onPress={submitDiary}>
-            <Text style={s.bigBtnT}>기록하기</Text>
+        {/* 뷰 전환 탭 */}
+        <View style={s.tabs}>
+          <TouchableOpacity style={[s.tab, diaryView === 'list' && s.tabOn]} onPress={() => setDiaryView('list')}>
+            <Text style={[s.tabT, diaryView === 'list' && s.tabTOn]}>내역</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[s.tab, diaryView === 'cal' && s.tabOn]} onPress={() => setDiaryView('cal')}>
+            <Text style={[s.tabT, diaryView === 'cal' && s.tabTOn]}>달력</Text>
           </TouchableOpacity>
         </View>
 
-        {diary.length === 0 && (
-          <Text style={s.empty}>첫 일기를 남겨보세요.{'\n'}나중에 다시 읽으면 힘이 돼요.</Text>
-        )}
-        {diaryGroups.map(mo => (
-          <View key={mo.label}>
-            <Text style={s.diaryMonth}>{mo.label}</Text>
-            {mo.days.map(dy => (
-              <View key={dy.label} style={s.dayCard}>
-                <View style={s.dayHead}>
-                  <Text style={s.dayHeadT}>{dy.label}</Text>
-                  <Text style={s.dayHeadT}>{dy.dayNo}일째</Text>
-                </View>
-                {dy.items.map(d => (
-                  <TouchableOpacity key={d.id} style={s.diaryRow} activeOpacity={0.7}
-                    onLongPress={() => confirmDiaryDelete(d)} delayLongPress={450}>
-                    <Text style={s.diaryDate}>{hhmm(d.ts)}</Text>
-                    <Text style={s.diaryText}>{d.text}</Text>
-                  </TouchableOpacity>
+        {diaryView === 'list' && (
+          <>
+            <View style={s.statCard}>
+              <TextInput style={[s.input, { minHeight: 70, textAlignVertical: 'top', marginTop: 0 }]} multiline
+                placeholder="오늘 어땠나요? (예: 회식이었는데 사이다로 버텼다. 뿌듯함)"
+                placeholderTextColor={C.faint} value={diaryText} onChangeText={setDiaryText} />
+              <TouchableOpacity style={[s.bigBtn, { backgroundColor: C.green }]} activeOpacity={0.85} onPress={submitDiary}>
+                <Text style={s.bigBtnT}>기록하기</Text>
+              </TouchableOpacity>
+            </View>
+
+            {diary.length === 0 && (
+              <Text style={s.empty}>첫 일기를 남겨보세요.{'\n'}나중에 다시 읽으면 힘이 돼요.</Text>
+            )}
+            {diaryGroups.map(mo => (
+              <View key={mo.label}>
+                <Text style={s.diaryMonth}>{mo.label}</Text>
+                {mo.days.map(dy => (
+                  <View key={dy.label} style={s.dayCard}>
+                    <View style={s.dayHead}>
+                      <Text style={s.dayHeadT}>{dy.label}</Text>
+                      <Text style={s.dayHeadT}>{dy.dayNo}일째</Text>
+                    </View>
+                    {dy.items.map(d => (
+                      <TouchableOpacity key={d.id} style={s.diaryRow} activeOpacity={0.7}
+                        onLongPress={() => confirmDiaryDelete(d)} delayLongPress={450}>
+                        <Text style={s.diaryDate}>{hhmm(d.ts)}</Text>
+                        <Text style={s.diaryText}>{d.text}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
                 ))}
               </View>
             ))}
+            {diary.length > 0 && <Text style={s.hint}>일기를 길게 누르면 삭제돼요</Text>}
+          </>
+        )}
+
+        {diaryView === 'cal' && (
+          <View style={s.calCard}>
+            <View style={s.monthHead}>
+              <TouchableOpacity onPress={() => { setDiaryMonthOffset(o => o-1); setDiarySelDay(null); }} style={s.navBtn} hitSlop={8}>
+                <Text style={s.navT}>‹</Text>
+              </TouchableOpacity>
+              <Text style={s.monthTitle}>{diaryViewYM.getFullYear()}년 {diaryViewYM.getMonth()+1}월</Text>
+              <TouchableOpacity onPress={() => { setDiaryMonthOffset(o => Math.min(0, o+1)); setDiarySelDay(null); }} style={s.navBtn} hitSlop={8}>
+                <Text style={[s.navT, diaryIsThisMonth && { opacity: 0.25 }]}>›</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={s.calHead}>
+              {DAY_NAMES.map((d, i) => (
+                <Text key={d} style={[s.calDow, i === 0 && { color: '#C96A6A' }, i === 6 && { color: '#6A8FC9' }]}>{d}</Text>
+              ))}
+            </View>
+            {Array.from({ length: diaryCal.length / 7 }, (_, r) => (
+              <View key={r} style={s.calRow}>
+                {diaryCal.slice(r*7, r*7+7).map((cell, i) => {
+                  if (!cell) return <View key={i} style={s.calCell} />;
+                  const isToday = diaryIsThisMonth && cell.d === todayDate;
+                  const isFuture = diaryIsThisMonth && cell.d > todayDate;
+                  return (
+                    <TouchableOpacity key={i} style={[s.calCell, diarySelDay === cell.d && s.calCellOn]}
+                      activeOpacity={0.6} disabled={isFuture}
+                      onPress={() => { setDiarySelDay(cell.d); setDiarySheetText(''); }}>
+                      <View style={[s.calDayWrap, isToday && s.calToday]}>
+                        <Text style={[s.calDay, isToday && { color: '#fff' }, isFuture && { color: '#3A3A42' }]}>{cell.d}</Text>
+                      </View>
+                      <Text style={[s.calAmt, cell.count > 0 && { color: C.green }]} numberOfLines={1}>
+                        {cell.count > 0 ? (cell.count > 1 ? `✎${cell.count}` : '✎') : ' '}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            ))}
+            <Text style={s.calHint}>날짜를 누르면 그날 일기를 보거나 쓸 수 있어요</Text>
           </View>
-        ))}
-        {diary.length > 0 && <Text style={s.hint}>일기를 길게 누르면 삭제돼요</Text>}
+        )}
       </ScrollView>
       )}
 
@@ -1337,6 +1430,36 @@ function MainApp({ profile, onSignOut }) {
             {selDayPays.length === 0
               ? <Text style={s.emptySmall}>이날은 쓴 돈이 없어요 👍</Text>
               : <ScrollView style={{ maxHeight: 380 }}>{selDayPays.map(p => renderItem(p, true))}</ScrollView>}
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* 일기 달력 일자 상세/작성 모달 */}
+      <Modal visible={diarySelDay != null} transparent animationType="slide" onRequestClose={() => setDiarySelDay(null)}>
+        <TouchableOpacity style={s.modalBg} activeOpacity={1} onPress={() => setDiarySelDay(null)}>
+          <View style={s.modalCard} onStartShouldSetResponder={() => true}>
+            <View style={s.grabber} />
+            <Text style={s.modalTitle}>{diaryViewYM.getMonth()+1}월 {diarySelDay}일</Text>
+            <Text style={s.modalSub}>이날의 일기를 보거나 새로 쓸 수 있어요</Text>
+            <TextInput style={[s.input, { minHeight: 64, textAlignVertical: 'top', marginTop: 0 }]} multiline
+              placeholder="이날 어땠나요?" placeholderTextColor={C.faint}
+              value={diarySheetText} onChangeText={setDiarySheetText} />
+            <TouchableOpacity style={[s.bigBtn, { backgroundColor: C.green }]} activeOpacity={0.85} onPress={submitDiaryForDay}>
+              <Text style={s.bigBtnT}>기록하기</Text>
+            </TouchableOpacity>
+            {diarySelEntries.length === 0 ? (
+              <Text style={[s.emptySmall, { paddingTop: 18 }]}>이날 쓴 일기가 아직 없어요</Text>
+            ) : (
+              <ScrollView style={{ maxHeight: 260, marginTop: 14 }}>
+                {diarySelEntries.map(d => (
+                  <TouchableOpacity key={d.id} style={s.diaryRow} activeOpacity={0.7}
+                    onLongPress={() => confirmDiaryDelete(d)} delayLongPress={450}>
+                    <Text style={s.diaryDate}>{hhmm(d.ts)}</Text>
+                    <Text style={s.diaryText}>{d.text}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            )}
           </View>
         </TouchableOpacity>
       </Modal>
