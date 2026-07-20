@@ -27,7 +27,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r21'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r22'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const LOCK_LIMIT = 100000;   // 하루 이만큼 넘게 쓰면 소명 요청
 const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
 // 건강 회복 타임라인 (일 기준)
@@ -396,6 +396,15 @@ function MainApp({ profile, onSignOut }) {
       .filter(([m, v]) => prv[m] && Math.abs(v - prv[m]) / Math.max(v, prv[m]) <= 0.2)
       .sort((a,b) => b[1]-a[1]);
   }, [payments, monthOffset]);
+
+  // 고정지출 월 환산 합계 (매일/N일마다인 것도 한 달 기준으로 환산해서 더함)
+  const recurMonthlyTotal = useMemo(() => {
+    return recurList.filter(t => t.active).reduce((sum, t) => {
+      if (t.cycle === 'monthly') return sum + t.amount;
+      if (t.cycle === 'daily') return sum + t.amount * 30;
+      return sum + t.amount * (30 / Math.max(1, t.intervalDays || 1));
+    }, 0);
+  }, [recurList]);
 
   // ── 고정지출 ──
   const openRecurAdd = useCallback(() => {
@@ -931,6 +940,9 @@ function MainApp({ profile, onSignOut }) {
               <Text style={s.budgetLink}>+ 추가</Text>
             </TouchableOpacity>
           </View>
+          {recurList.length > 0 && (
+            <Text style={s.recurTotalLine}>월 환산 합계 <Text style={{ color: C.text, fontWeight: '800' }}>{won(Math.round(recurMonthlyTotal))}원</Text></Text>
+          )}
           {recurList.length === 0 && (
             <Text style={[s.statEmpty, { paddingBottom: 10 }]}>넷플릭스, 월세처럼 반복되는 지출을 등록해두면{'\n'}주기마다 자동으로 기록돼요.</Text>
           )}
@@ -1880,6 +1892,7 @@ const s = StyleSheet.create({
   authSub: { color: C.sub, fontSize: 14, textAlign: 'center', marginTop: 6, marginBottom: 28 },
   authErr: { color: C.red, fontSize: 13, marginTop: 10, textAlign: 'center' },
   recurLinkedHint: { color: C.faint, fontSize: 12.5, marginTop: 14, textAlign: 'center' },
+  recurTotalLine: { color: C.faint, fontSize: 12.5, marginBottom: 10 },
   recurConvertT: { color: C.blueText, fontWeight: '700', fontSize: 13.5 },
   authSwitch: { color: C.blueText, fontSize: 13.5, fontWeight: '700', textAlign: 'center' },
   shareLinkBox: { backgroundColor: C.card2, borderRadius: 14, padding: 15, marginTop: 4 },
