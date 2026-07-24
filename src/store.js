@@ -198,6 +198,39 @@ export async function getMerchantMap() {
   } catch { return {}; }
 }
 
+// ---------------- 지출 목표 (주간/월간/사용자 설정 기간 + 금액) ----------------
+const GOALS_KEY = 'spend_goals_v1';
+
+export async function getGoals() {
+  try {
+    const raw = await AsyncStorage.getItem(GOALS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+async function saveGoalsList(list) {
+  await AsyncStorage.setItem(GOALS_KEY, JSON.stringify(list));
+}
+// goal: { label?, kind:'weekly'|'monthly'|'custom', amount, startDate?, endDate? } (startDate/endDate는 custom일 때만)
+export async function addGoal(goal) {
+  const list = await getGoals();
+  const next = [{ id: `g_${Date.now()}`, ...goal }, ...list];
+  await saveGoalsList(next);
+  return next;
+}
+export async function updateGoal(id, patch) {
+  const list = await getGoals();
+  const rec = list.find(g => g.id === id);
+  if (!rec) return list;
+  Object.assign(rec, patch);
+  await saveGoalsList(list);
+  return list;
+}
+export async function deleteGoal(id) {
+  const next = (await getGoals()).filter(g => g.id !== id);
+  await saveGoalsList(next);
+  return next;
+}
+
 // ---------------- 고정지출(정기결제) ----------------
 const RECUR_KEY = 'recurring_v1';
 

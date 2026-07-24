@@ -13,8 +13,10 @@ import {
   getQuitDates, saveQuitDates,
   getRecurring, addRecurring, updateRecurring, deleteRecurring, runRecurringGenerator,
   applySplit, clearSplit,
+  getGoals, addGoal, updateGoal, deleteGoal,
 } from './src/store';
-import { cycleLabel, nextDueLabel } from './src/recurring';
+import { cycleLabel, nextDueLabel, addDays as addDaysLocal } from './src/recurring';
+import { goalRange, goalPeriodLabel, goalKindLabel, daysLeftLabel } from './src/goals';
 import { parsePayment } from './src/parser';
 import { QUIT_GOALS, CATEGORIES, SHOP_ITEMS, SUPABASE_URL } from './src/config';
 import { hasSupabase } from './src/supabase';
@@ -28,7 +30,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r24'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r25'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const LOCK_LIMIT = 100000;   // 하루 이만큼 넘게 쓰면 소명 요청
 const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
 // 건강 회복 타임라인 (일 기준)
@@ -244,6 +246,11 @@ function MainApp({ profile, onSignOut }) {
   const [recurEditId, setRecurEditId] = useState(null); // null = 새로 추가
   const [recurDraft, setRecurDraft] = useState(null);
   const [recurErr, setRecurErr] = useState('');
+  const [goals, setGoals] = useState([]);
+  const [goalOpen, setGoalOpen] = useState(false);
+  const [goalEditId, setGoalEditId] = useState(null); // null = 새로 추가
+  const [goalDraft, setGoalDraft] = useState(null);
+  const [goalErr, setGoalErr] = useState('');
   const [explanations, setExplanations] = useState({});
   const [explainText, setExplainText] = useState('');
   const [cheers, setCheers] = useState([]);
@@ -266,13 +273,13 @@ function MainApp({ profile, onSignOut }) {
 
   const load = useCallback(async () => {
     await runRecurringGenerator(); // 도래한 고정지출을 먼저 자동 기록
-    const [p, b, d, q, qd, ex, ch, rec, st] = await Promise.all([
+    const [p, b, d, q, qd, ex, ch, rec, gl, st] = await Promise.all([
       getPayments(), getBudgets(), getDiary(), getQuitSettings(), getQuitDates(),
-      getExplanations(), fetchCheers(), getRecurring(),
+      getExplanations(), fetchCheers(), getRecurring(), getGoals(),
       RNAndroidNotificationListener.getPermissionStatus(),
     ]);
     setPayments(p); setBudgets(b); setDiary(d); setQuitSet(q); setQuitDates(qd);
-    setExplanations(ex); setCheers(ch); setRecurList(rec); setPerm(st);
+    setExplanations(ex); setCheers(ch); setRecurList(rec); setGoals(gl); setPerm(st);
   }, []);
 
   useEffect(() => {
@@ -415,6 +422,20 @@ function MainApp({ profile, onSignOut }) {
     }, 0);
   }, [recurList]);
 
+  // 목표별 진행 현황 (전체 payments 기준 — 주간/월간은 오늘 기준으로 계산되는 기간)
+  const goalStatus = useMemo(() => {
+    const todayMid = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    return goals.map(g => {
+      const { start, end } = goalRange(g, todayMid);
+      const spent = payments.filter(p => {
+        if (p.deleted || isIncome(p) || isSaving(p)) return false;
+        const d = new Date(p.ts);
+        return d >= start && d < addDaysLocal(end, 1);
+      }).reduce((s, p) => s + p.amount, 0);
+      return { goal: g, start, end, spent, pct: g.amount > 0 ? Math.round(spent / g.amount * 100) : 0 };
+    });
+  }, [goals, payments]);
+
   // ── 고정지출 ──
   const openRecurAdd = useCallback(() => {
     setRecurEditId(null); setRecurErr('');
@@ -474,6 +495,48 @@ function MainApp({ profile, onSignOut }) {
       { text: '삭제', style: 'destructive', onPress: async () => { setRecurList([...await deleteRecurring(recurEditId)]); setRecurOpen(false); } },
     ]);
   }, [recurEditId]);
+
+  // ── 지출 목표 (주간/월간/기간 설정) ──
+  const openGoalAdd = useCallback(() => {
+    setGoalEditId(null); setGoalErr('');
+    setGoalDraft({ label: '', kind: 'weekly', amount: '', startDate: todayISO(), endDate: todayISO() });
+    setGoalOpen(true);
+  }, []);
+
+  const openGoalEdit = useCallback((g) => {
+    setGoalEditId(g.id); setGoalErr('');
+    setGoalDraft({
+      label: g.label || '', kind: g.kind, amount: fmtInput(g.amount),
+      startDate: g.startDate || todayISO(), endDate: g.endDate || todayISO(),
+    });
+    setGoalOpen(true);
+  }, []);
+
+  const saveGoalDraft = useCallback(async () => {
+    const d = goalDraft;
+    const amount = parseInt(String(d.amount).replace(/[^\d]/g, ''), 10);
+    if (!amount) { setGoalErr('금액을 입력해주세요.'); return; }
+    if (d.kind === 'custom') {
+      const ok = /^\d{4}-\d{2}-\d{2}$/;
+      if (!ok.test(d.startDate) || !ok.test(d.endDate) || isNaN(new Date(d.startDate)) || isNaN(new Date(d.endDate))) {
+        setGoalErr('날짜 형식을 확인해주세요 (YYYY-MM-DD)'); return;
+      }
+      if (new Date(d.endDate) < new Date(d.startDate)) { setGoalErr('종료일이 시작일보다 빠를 수 없어요.'); return; }
+    }
+    const goal = {
+      label: d.label.trim(), kind: d.kind, amount,
+      ...(d.kind === 'custom' ? { startDate: d.startDate, endDate: d.endDate } : {}),
+    };
+    const next = goalEditId ? await updateGoal(goalEditId, goal) : await addGoal(goal);
+    setGoals([...next]); setGoalOpen(false);
+  }, [goalDraft, goalEditId]);
+
+  const confirmGoalDelete = useCallback(() => {
+    Alert.alert('지출 목표를 삭제할까요?', '', [
+      { text: '취소', style: 'cancel' },
+      { text: '삭제', style: 'destructive', onPress: async () => { setGoals([...await deleteGoal(goalEditId)]); setGoalOpen(false); } },
+    ]);
+  }, [goalEditId]);
 
   // ── 액션 ──
   const openEdit = useCallback((p) => {
@@ -982,6 +1045,39 @@ function MainApp({ profile, onSignOut }) {
             </Text>
           </View>
         )}
+
+        {/* 지출 목표 (주간/월간/기간 설정) */}
+        <View style={s.dayCard}>
+          <View style={s.dayHead}>
+            <Text style={s.dayHeadT}>🎯 지출 목표 {goals.length > 0 ? `${goals.length}건` : ''}</Text>
+            <TouchableOpacity onPress={openGoalAdd} hitSlop={8}>
+              <Text style={s.budgetLink}>+ 추가</Text>
+            </TouchableOpacity>
+          </View>
+          {goals.length === 0 && (
+            <Text style={[s.statEmpty, { paddingBottom: 10 }]}>"이번 주 10만원까지" "여행 기간 30만원" 처럼{'\n'}기간과 금액을 정해두면 현황을 보여줘요.</Text>
+          )}
+          {goalStatus.map(({ goal: g, end, spent, pct }) => {
+            const over = pct >= 100;
+            const color = over ? C.red : pct >= 80 ? C.gold : C.blueText;
+            return (
+              <TouchableOpacity key={g.id} style={{ paddingVertical: 10 }} activeOpacity={0.7} onPress={() => openGoalEdit(g)}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <Text style={s.itemName} numberOfLines={1}>
+                    {g.label ? g.label : goalKindLabel(g.kind)} · {goalPeriodLabel(g, new Date(now.getFullYear(), now.getMonth(), now.getDate()))}
+                  </Text>
+                  <Text style={[s.itemAmt, { color }]}>{won(spent)} / {won(g.amount)}원</Text>
+                </View>
+                <View style={s.budBarBg}>
+                  <View style={[s.budBarFill, { width: `${Math.min(100, pct)}%`, backgroundColor: color }]} />
+                </View>
+                <Text style={s.budText}>
+                  {pct}% 사용 · {over ? `${won(spent - g.amount)}원 초과` : `${won(g.amount - spent)}원 남음`} · {daysLeftLabel(end, new Date(now.getFullYear(), now.getMonth(), now.getDate()))}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
 
         {/* 고정지출 */}
         <View style={s.dayCard}>
@@ -1740,6 +1836,56 @@ function MainApp({ profile, onSignOut }) {
             <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={saveBudgetDraft}>
               <Text style={s.bigBtnT}>저장</Text>
             </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* 지출 목표 추가/수정 모달 */}
+      <Modal visible={goalOpen} transparent animationType="slide" onRequestClose={() => setGoalOpen(false)}>
+        <TouchableOpacity style={s.modalBg} activeOpacity={1} onPress={() => setGoalOpen(false)}>
+          <View style={s.modalCard} onStartShouldSetResponder={() => true}>
+            <View style={s.grabber} />
+            <Text style={s.modalTitle}>{goalEditId ? '지출 목표 수정' : '지출 목표 추가'}</Text>
+            <Text style={s.modalSub}>기간 동안 얼마나 썼는지 진행률로 보여줘요.</Text>
+            {goalDraft && (
+              <ScrollView style={{ maxHeight: 420 }} keyboardShouldPersistTaps="handled">
+                <TextInput style={s.input} placeholder="이름 (선택, 예: 여행 경비)" placeholderTextColor={C.faint}
+                  value={goalDraft.label} onChangeText={v => setGoalDraft(d => ({ ...d, label: v }))} />
+                <TextInput style={s.input} placeholder="목표 금액 (원)" placeholderTextColor={C.faint} keyboardType="number-pad"
+                  value={goalDraft.amount} onChangeText={v => setGoalDraft(d => ({ ...d, amount: fmtInput(v) }))} />
+
+                <Text style={s.budLabel}>기간</Text>
+                <View style={s.tabs}>
+                  {[['weekly','주간'],['monthly','월간'],['custom','기간 설정']].map(([k, label]) => (
+                    <TouchableOpacity key={k} style={[s.tab, goalDraft.kind === k && s.tabOn]}
+                      onPress={() => setGoalDraft(d => ({ ...d, kind: k }))}>
+                      <Text style={[s.tabT, goalDraft.kind === k && s.tabTOn]}>{label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                {goalDraft.kind === 'weekly' && <Text style={s.statEmpty}>이번 주 월요일~일요일 기준으로, 매주 자동으로 넘어가요.</Text>}
+                {goalDraft.kind === 'monthly' && <Text style={s.statEmpty}>이번 달 기준으로, 매달 자동으로 넘어가요.</Text>}
+                {goalDraft.kind === 'custom' && (
+                  <>
+                    <Text style={s.budLabel}>시작일 (YYYY-MM-DD)</Text>
+                    <TextInput style={s.input} placeholder="2026-07-15" placeholderTextColor={C.faint}
+                      value={goalDraft.startDate} onChangeText={v => setGoalDraft(d => ({ ...d, startDate: v }))} />
+                    <Text style={s.budLabel}>종료일 (YYYY-MM-DD)</Text>
+                    <TextInput style={s.input} placeholder="2026-07-20" placeholderTextColor={C.faint}
+                      value={goalDraft.endDate} onChangeText={v => setGoalDraft(d => ({ ...d, endDate: v }))} />
+                  </>
+                )}
+                {!!goalErr && <Text style={s.authErr}>{goalErr}</Text>}
+              </ScrollView>
+            )}
+            <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={saveGoalDraft}>
+              <Text style={s.bigBtnT}>저장</Text>
+            </TouchableOpacity>
+            {goalEditId && (
+              <TouchableOpacity style={{ marginTop: 16, alignItems: 'center' }} onPress={confirmGoalDelete}>
+                <Text style={{ color: C.red, fontWeight: '700', fontSize: 14 }}>목표 삭제</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </TouchableOpacity>
       </Modal>
