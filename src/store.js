@@ -137,6 +137,33 @@ export async function updateItem(id, { category, memo }) {
   return list;
 }
 
+// 엔빵(나눠 내기): 카드로 전체 금액을 결제했지만 실제 내 몫만 지출로 잡고 싶을 때.
+// 처음 분할할 때만 원래 금액을 originalAmount에 보존해두고, amount는 내 몫으로 바꿈.
+export async function applySplit(id, newAmount, splitCount) {
+  const list = await getPayments();
+  const rec = list.find(p => p.id === id);
+  if (!rec) return list;
+  if (rec.originalAmount == null) rec.originalAmount = rec.amount;
+  rec.amount = newAmount;
+  rec.splitCount = splitCount || null;
+  await AsyncStorage.setItem(KEY, JSON.stringify(list));
+  syncToSupabase(rec);
+  return list;
+}
+
+// 분할 해제: 원래 결제 금액으로 되돌림
+export async function clearSplit(id) {
+  const list = await getPayments();
+  const rec = list.find(p => p.id === id);
+  if (!rec || rec.originalAmount == null) return list;
+  rec.amount = rec.originalAmount;
+  delete rec.originalAmount;
+  delete rec.splitCount;
+  await AsyncStorage.setItem(KEY, JSON.stringify(list));
+  syncToSupabase(rec);
+  return list;
+}
+
 // 소프트 삭제: 목록에서 숨기고 '삭제된 항목'으로 이동 (복원 가능)
 export async function deletePayment(id) {
   const list = await getPayments();
@@ -281,7 +308,7 @@ export async function deleteCheer(id) {
 // ---------------- Supabase 동기화 (로그인한 사용자 소유로 저장) ----------------
 export async function syncToSupabase(record) {
   if (!hasSupabase) return;
-  if (record.type === 'income') return; // 수입은 폰에만 기록 (웹 페이지는 지출 전용)
+  if (record.type === 'income' || record.type === 'saving') return; // 수입/저축은 폰에만 기록 (웹 페이지는 지출 전용)
   if (record.deleted) return;           // 삭제된 항목은 웹에 안 보이게
   try {
     const { data: { user } } = await supabase.auth.getUser();
@@ -293,6 +320,8 @@ export async function syncToSupabase(record) {
       amount: record.amount,
       category: record.category || 'etc',
       memo: record.memo || null,
+      original_amount: record.originalAmount ?? null,
+      split_count: record.splitCount ?? null,
       user_id: user.id,
     });
   } catch (e) { /* 오프라인이면 무시. 다음 앱 실행 시 syncAll로 재전송 */ }

@@ -12,6 +12,7 @@ import {
   getExplanations, saveExplanation, fetchCheers, deleteCheer,
   getQuitDates, saveQuitDates,
   getRecurring, addRecurring, updateRecurring, deleteRecurring, runRecurringGenerator,
+  applySplit, clearSplit,
 } from './src/store';
 import { cycleLabel, nextDueLabel } from './src/recurring';
 import { parsePayment } from './src/parser';
@@ -27,7 +28,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r22'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r23'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const LOCK_LIMIT = 100000;   // 하루 이만큼 넘게 쓰면 소명 요청
 const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
 // 건강 회복 타임라인 (일 기준)
@@ -88,6 +89,7 @@ const srcName = app => !app || app === 'manual' ? '직접 입력' : app === 'tes
   : /kakaobank|kbstar|sbanking/.test(app) ? '은행' : '카드 알림';
 
 const isIncome = p => p.type === 'income';
+const isSaving = p => p.type === 'saving';
 
 export default function Root() {
   const [checking, setChecking] = useState(true);
@@ -210,6 +212,9 @@ function MainApp({ profile, onSignOut }) {
   const [pickTarget, setPickTarget] = useState(null); // 수정할 기록
   const [editCat, setEditCat] = useState('etc');
   const [editMemo, setEditMemo] = useState('');
+  const [splitOpen, setSplitOpen] = useState(false);
+  const [splitPeople, setSplitPeople] = useState('');
+  const [splitAmount, setSplitAmount] = useState('');
   const [adding, setAdding] = useState(false);
   const [addType, setAddType] = useState('expense'); // 'expense' | 'income'
   const [addName, setAddName] = useState('');
@@ -291,18 +296,20 @@ function MainApp({ profile, onSignOut }) {
     return d.getFullYear() === ym.getFullYear() && d.getMonth() === ym.getMonth();
   };
   // 지출 (삭제/수입 제외)
-  const monthPays = useMemo(() => payments.filter(p => !p.deleted && !isIncome(p) && inMonth(p, viewYM)), [payments, monthOffset]);
+  const monthPays = useMemo(() => payments.filter(p => !p.deleted && !isIncome(p) && !isSaving(p) && inMonth(p, viewYM)), [payments, monthOffset]);
   const monthIncome = useMemo(() => payments.filter(p => !p.deleted && isIncome(p) && inMonth(p, viewYM)), [payments, monthOffset]);
+  const monthSaving = useMemo(() => payments.filter(p => !p.deleted && isSaving(p) && inMonth(p, viewYM)), [payments, monthOffset]);
   const monthDeleted = useMemo(() => payments.filter(p => p.deleted && inMonth(p, viewYM)), [payments, monthOffset]);
   const total = monthPays.reduce((s, p) => s + p.amount, 0);
   const incomeTotal = monthIncome.reduce((s, p) => s + p.amount, 0);
+  const savingTotal = monthSaving.reduce((s, p) => s + p.amount, 0);
 
   // 지난달 대비: 이번 달=같은 기간(1일~오늘), 과거 달=전체
   const prevPays = useMemo(() => {
     const prevYM = new Date(viewYM.getFullYear(), viewYM.getMonth() - 1, 1);
     const sameWindow = monthOffset === 0;
     return payments.filter(p => {
-      if (p.deleted || isIncome(p) || !inMonth(p, prevYM)) return false;
+      if (p.deleted || isIncome(p) || isSaving(p) || !inMonth(p, prevYM)) return false;
       return sameWindow ? new Date(p.ts).getDate() <= now.getDate() : true;
     });
   }, [payments, monthOffset]);
@@ -325,13 +332,13 @@ function MainApp({ profile, onSignOut }) {
 
   // 검색/필터 적용된 내역 (내역 탭)
   const listPays = useMemo(() => {
-    const all = [...monthPays, ...monthIncome].sort((a,b) => new Date(b.ts) - new Date(a.ts));
+    const all = [...monthPays, ...monthIncome, ...monthSaving].sort((a,b) => new Date(b.ts) - new Date(a.ts));
     return all.filter(p => {
-      if (filterCats.length > 0 && (isIncome(p) || !filterCats.includes(CAT[p.category] ? p.category : 'etc'))) return false;
+      if (filterCats.length > 0 && (isIncome(p) || isSaving(p) || !filterCats.includes(CAT[p.category] ? p.category : 'etc'))) return false;
       if (search.trim() && !(p.merchant + (p.memo||'')).toLowerCase().includes(search.trim().toLowerCase())) return false;
       return true;
     });
-  }, [monthPays, monthIncome, search, filterCats]);
+  }, [monthPays, monthIncome, monthSaving, search, filterCats]);
 
   // 체크한 카테고리 합계 (검색어와 무관하게, 이 달 전체 기준)
   const filterSum = useMemo(() => {
@@ -379,7 +386,7 @@ function MainApp({ profile, onSignOut }) {
     const out = [];
     for (let i = 5; i >= 0; i--) {
       const ym = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const sum = payments.filter(p => !p.deleted && !isIncome(p) && inMonth(p, ym)).reduce((s,p) => s+p.amount, 0);
+      const sum = payments.filter(p => !p.deleted && !isIncome(p) && !isSaving(p) && inMonth(p, ym)).reduce((s,p) => s+p.amount, 0);
       out.push({ label: `${ym.getMonth()+1}월`, sum, cur: i === 0 });
     }
     return out;
@@ -390,8 +397,8 @@ function MainApp({ profile, onSignOut }) {
   const recurring = useMemo(() => {
     const prevYM = new Date(viewYM.getFullYear(), viewYM.getMonth() - 1, 1);
     const cur = {}, prv = {};
-    payments.filter(p => !p.deleted && !isIncome(p) && inMonth(p, viewYM)).forEach(p => { cur[p.merchant] = (cur[p.merchant]||0) + p.amount; });
-    payments.filter(p => !p.deleted && !isIncome(p) && inMonth(p, prevYM)).forEach(p => { prv[p.merchant] = (prv[p.merchant]||0) + p.amount; });
+    payments.filter(p => !p.deleted && !isIncome(p) && !isSaving(p) && inMonth(p, viewYM)).forEach(p => { cur[p.merchant] = (cur[p.merchant]||0) + p.amount; });
+    payments.filter(p => !p.deleted && !isIncome(p) && !isSaving(p) && inMonth(p, prevYM)).forEach(p => { prv[p.merchant] = (prv[p.merchant]||0) + p.amount; });
     return Object.entries(cur)
       .filter(([m, v]) => prv[m] && Math.abs(v - prv[m]) / Math.max(v, prv[m]) <= 0.2)
       .sort((a,b) => b[1]-a[1]);
@@ -470,15 +477,40 @@ function MainApp({ profile, onSignOut }) {
   const openEdit = useCallback((p) => {
     setEditCat(CAT[p.category] ? p.category : 'etc');
     setEditMemo(p.memo || '');
+    setSplitOpen(false);
+    setSplitPeople(p.splitCount ? String(p.splitCount) : '');
+    setSplitAmount(fmtInput(p.amount));
     setPickTarget(p);
   }, []);
 
   const saveEdit = useCallback(async () => {
     const next = await updateItem(pickTarget.id, {
-      category: isIncome(pickTarget) ? undefined : editCat, memo: editMemo.trim(),
+      category: (isIncome(pickTarget) || isSaving(pickTarget)) ? undefined : editCat, memo: editMemo.trim(),
     });
     setPayments([...next]); setPickTarget(null);
   }, [pickTarget, editCat, editMemo]);
+
+  // ── 엔빵(나눠 내기) ──
+  const splitBase = pickTarget ? (pickTarget.originalAmount ?? pickTarget.amount) : 0;
+
+  const onSplitPeopleChange = useCallback((v) => {
+    const digits = v.replace(/[^\d]/g, '');
+    setSplitPeople(digits);
+    const n = Number(digits);
+    if (n > 0) setSplitAmount(fmtInput(Math.round(splitBase / n)));
+  }, [splitBase]);
+
+  const saveSplit = useCallback(async () => {
+    const amt = parseInt(splitAmount.replace(/[^\d]/g, ''), 10);
+    if (!amt) return;
+    const next = await applySplit(pickTarget.id, amt, splitPeople ? Number(splitPeople) : null);
+    setPayments([...next]); setPickTarget(null); setSplitOpen(false);
+  }, [pickTarget, splitAmount, splitPeople]);
+
+  const resetSplit = useCallback(async () => {
+    const next = await clearSplit(pickTarget.id);
+    setPayments([...next]); setPickTarget(null); setSplitOpen(false);
+  }, [pickTarget]);
 
   const addManual = useCallback(async () => {
     const amount = parseInt(addAmt.replace(/[^\d]/g, ''), 10);
@@ -486,7 +518,9 @@ function MainApp({ profile, onSignOut }) {
     const next = await savePayment({
       id: `m_${Date.now()}`, ts: new Date().toISOString(),
       merchant: addName.trim(), amount, app: 'manual',
-      ...(addType === 'income' ? { type: 'income', category: 'etc' } : { category: addCat }),
+      ...(addType === 'income' ? { type: 'income', category: 'etc' }
+        : addType === 'saving' ? { type: 'saving', category: 'etc' }
+        : { category: addCat }),
     });
     setPayments([...next]); setAdding(false); setAddName(''); setAddAmt('');
   }, [addName, addAmt, addCat, addType]);
@@ -531,31 +565,33 @@ function MainApp({ profile, onSignOut }) {
   }, [budgetDraft]);
 
   const exportCSV = useCallback(async () => {
-    const rows = [...monthPays, ...monthIncome].sort((a,b) => new Date(a.ts) - new Date(b.ts));
+    const rows = [...monthPays, ...monthIncome, ...monthSaving].sort((a,b) => new Date(a.ts) - new Date(b.ts));
     if (rows.length === 0) { Alert.alert('내보내기', '이 달에는 기록이 없어요.'); return; }
     const esc = v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
-    const lines = ['날짜,시간,이름,금액,종류,카테고리,메모'];
+    const typeLabel = p => isIncome(p) ? '수입' : isSaving(p) ? '저축' : '지출';
+    const lines = ['날짜,시간,이름,금액,종류,카테고리,메모,원래금액'];
     rows.forEach(p => {
       const d = new Date(p.ts);
       lines.push([
         `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`,
         hhmm(p.ts), esc(p.merchant), p.amount,
-        isIncome(p) ? '수입' : '지출',
-        isIncome(p) ? '' : (CAT[p.category] || CAT.etc).label,
+        typeLabel(p),
+        (isIncome(p) || isSaving(p)) ? '' : (CAT[p.category] || CAT.etc).label,
         esc(p.memo || ''),
+        p.originalAmount != null ? p.originalAmount : '',
       ].join(','));
     });
     await Share.share({
       title: `가계부 ${viewYM.getFullYear()}-${viewYM.getMonth()+1}`,
       message: lines.join('\n'),
     });
-  }, [monthPays, monthIncome, monthOffset]);
+  }, [monthPays, monthIncome, monthSaving, monthOffset]);
 
   // ── 소명 잠금: 최근 14일 중 하루 10만원 이상인데 소명 안 한 날 ──
   const lockTarget = useMemo(() => {
     const totals = {}, itemsByDay = {};
     payments.forEach(p => {
-      if (p.deleted || isIncome(p)) return;
+      if (p.deleted || isIncome(p) || isSaving(p)) return;
       const d = new Date(p.ts);
       const diff = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
       if (diff < 0 || diff > 14) return;
@@ -583,7 +619,7 @@ function MainApp({ profile, onSignOut }) {
     const sumRange = (from, to, byCat) => { // from/to: 일수 전 (from > to)
       const out = byCat ? {} : { total: 0 };
       payments.forEach(p => {
-        if (p.deleted || isIncome(p)) return;
+        if (p.deleted || isIncome(p) || isSaving(p)) return;
         const d = new Date(p.ts);
         const diff = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
         if (diff > from || diff < to) return;
@@ -771,7 +807,8 @@ function MainApp({ profile, onSignOut }) {
   // 결제 행 렌더러 (내역/일자상세 공용)
   const renderItem = (p, fromDaySheet) => {
     const inc = isIncome(p);
-    const cat = inc ? { label: '수입', color: C.green } : (CAT[p.category] || CAT.etc);
+    const sav = isSaving(p);
+    const cat = inc ? { label: '수입', color: C.green } : sav ? { label: '저축', color: C.gold } : (CAT[p.category] || CAT.etc);
     return (
       <TouchableOpacity key={p.id} style={s.item} activeOpacity={0.6}
         onPress={() => { if (fromDaySheet) setSelDay(null); openEdit(p); }}
@@ -782,9 +819,12 @@ function MainApp({ profile, onSignOut }) {
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={s.itemName} numberOfLines={1}>{p.recurringId ? '📌 ' : ''}{p.merchant}</Text>
           <Text style={s.itemSub}>{hhmm(p.ts)} · {srcName(p.app)} · {cat.label}</Text>
+          {p.originalAmount != null && (
+            <Text style={s.itemSplitHint}>원래 {won(p.originalAmount)}원{p.splitCount ? ` · ${p.splitCount}명이서 나눔` : ''}</Text>
+          )}
           {!!p.memo && <Text style={s.itemMemo} numberOfLines={2}>{p.memo}</Text>}
         </View>
-        <Text style={[s.itemAmt, inc && { color: C.green }]}>{inc ? '+' : ''}{won(p.amount)}원</Text>
+        <Text style={[s.itemAmt, (inc || sav) && { color: inc ? C.green : C.gold }]}>{(inc || sav) ? '+' : ''}{won(p.amount)}원</Text>
       </TouchableOpacity>
     );
   };
@@ -862,7 +902,12 @@ function MainApp({ profile, onSignOut }) {
             </TouchableOpacity>
           </View>
           <Text style={s.total}>{won(total)}원</Text>
-          {incomeTotal > 0 && <Text style={s.incomeLine}>수입 +{won(incomeTotal)}원</Text>}
+          {(incomeTotal > 0 || savingTotal > 0) && (
+            <View style={{ flexDirection: 'row', gap: 12 }}>
+              {incomeTotal > 0 && <Text style={s.incomeLine}>수입 +{won(incomeTotal)}원</Text>}
+              {savingTotal > 0 && <Text style={[s.incomeLine, { color: C.gold }]}>저축 +{won(savingTotal)}원</Text>}
+            </View>
+          )}
           {delta !== null && (
             <View style={s.deltaPill}>
               <Text style={[s.deltaT, { color: delta <= 0 ? C.blueText : C.red }]}>
@@ -1008,7 +1053,7 @@ function MainApp({ profile, onSignOut }) {
                 <View key={g.label} style={s.dayCard}>
                   <View style={s.dayHead}>
                     <Text style={s.dayHeadT}>{g.label}</Text>
-                    <Text style={s.dayHeadT}>{won(g.items.filter(x => !isIncome(x)).reduce((s2,x)=>s2+x.amount,0))}원</Text>
+                    <Text style={s.dayHeadT}>{won(g.items.filter(x => !isIncome(x) && !isSaving(x)).reduce((s2,x)=>s2+x.amount,0))}원</Text>
                   </View>
                   {explanations[gk] && (
                     <Text style={s.explainLine}>📋 소명: {explanations[gk]}</Text>
@@ -1100,14 +1145,15 @@ function MainApp({ profile, onSignOut }) {
             </View>
 
             <View style={s.statCard}>
-              <Text style={s.statTitle}>{viewYM.getMonth()+1}월 수입 vs 지출</Text>
+              <Text style={s.statTitle}>{viewYM.getMonth()+1}월 수입 · 지출 · 저축</Text>
               <View style={s.recurRow}><Text style={s.recurName}>수입</Text><Text style={[s.recurAmt, { color: C.green }]}>+{won(incomeTotal)}원</Text></View>
               <View style={s.recurRow}><Text style={s.recurName}>지출</Text><Text style={s.recurAmt}>-{won(total)}원</Text></View>
+              <View style={s.recurRow}><Text style={s.recurName}>저축</Text><Text style={[s.recurAmt, { color: C.gold }]}>-{won(savingTotal)}원</Text></View>
               <View style={[s.recurRow, { borderTopWidth: 1, borderTopColor: C.card2, paddingTop: 10, marginTop: 4 }]}>
                 <Text style={[s.recurName, { color: C.sub }]}>남은 돈</Text>
-                <Text style={[s.recurAmt, { color: incomeTotal - total >= 0 ? C.green : C.red }]}>{won(incomeTotal - total)}원</Text>
+                <Text style={[s.recurAmt, { color: incomeTotal - total - savingTotal >= 0 ? C.green : C.red }]}>{won(incomeTotal - total - savingTotal)}원</Text>
               </View>
-              <Text style={s.statEmpty}>수입은 + 버튼에서 "수입" 탭으로 기록해요</Text>
+              <Text style={s.statEmpty}>+ 버튼에서 "수입"·"저축" 탭으로 각각 기록해요</Text>
             </View>
 
             <TouchableOpacity style={s.exportBtn} activeOpacity={0.8} onPress={exportCSV}>
@@ -1482,8 +1528,8 @@ function MainApp({ profile, onSignOut }) {
           <View style={s.modalCard} onStartShouldSetResponder={() => true}>
             <View style={s.grabber} />
             <Text style={s.modalTitle}>{pickTarget?.merchant}</Text>
-            <Text style={s.modalSub}>{pickTarget ? won(pickTarget.amount) + '원' : ''}{pickTarget && !isIncome(pickTarget) ? ' — 카테고리를 바꾸면 이 가맹점은 그걸로 기억해요' : ''}</Text>
-            {pickTarget && !isIncome(pickTarget) && (
+            <Text style={s.modalSub}>{pickTarget ? won(pickTarget.amount) + '원' : ''}{pickTarget && !isIncome(pickTarget) && !isSaving(pickTarget) ? ' — 카테고리를 바꾸면 이 가맹점은 그걸로 기억해요' : ''}</Text>
+            {pickTarget && !isIncome(pickTarget) && !isSaving(pickTarget) && (
               <View style={s.catGrid}>
                 {CATEGORIES.map(c => (
                   <TouchableOpacity key={c.key} activeOpacity={0.7}
@@ -1500,7 +1546,37 @@ function MainApp({ profile, onSignOut }) {
             <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={saveEdit}>
               <Text style={s.bigBtnT}>저장</Text>
             </TouchableOpacity>
-            {pickTarget && !isIncome(pickTarget) && (
+
+            {pickTarget && !isIncome(pickTarget) && !isSaving(pickTarget) && (
+              <>
+                {!splitOpen ? (
+                  <TouchableOpacity style={{ marginTop: 16, alignItems: 'center' }} onPress={() => setSplitOpen(true)}>
+                    <Text style={s.recurConvertT}>🍕 {pickTarget.originalAmount != null ? '나눠 낸 금액 다시 조정하기' : '나눠 냈어요 (엔빵)'}</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <View style={{ marginTop: 16 }}>
+                    <Text style={s.budLabel}>원래 결제 금액</Text>
+                    <Text style={s.splitBaseAmt}>{won(splitBase)}원</Text>
+                    <Text style={s.budLabel}>몇 명이서 나눴나요?</Text>
+                    <TextInput style={s.input} keyboardType="number-pad" placeholder="예: 4" placeholderTextColor={C.faint}
+                      value={splitPeople} onChangeText={onSplitPeopleChange} />
+                    <Text style={s.budLabel}>내가 낼 금액</Text>
+                    <TextInput style={s.input} keyboardType="number-pad" placeholderTextColor={C.faint}
+                      value={splitAmount} onChangeText={v => setSplitAmount(fmtInput(v))} />
+                    <TouchableOpacity style={[s.bigBtn, { backgroundColor: C.gold }]} activeOpacity={0.85} onPress={saveSplit}>
+                      <Text style={s.bigBtnT}>이 금액만 지출로 반영</Text>
+                    </TouchableOpacity>
+                    {pickTarget.originalAmount != null && (
+                      <TouchableOpacity style={{ marginTop: 12, alignItems: 'center' }} onPress={resetSplit}>
+                        <Text style={{ color: C.faint, fontWeight: '700', fontSize: 13 }}>분할 해제 (원래 금액으로)</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                )}
+              </>
+            )}
+
+            {pickTarget && !isIncome(pickTarget) && !isSaving(pickTarget) && (
               pickTarget.recurringId ? (
                 <Text style={s.recurLinkedHint}>📌 이미 고정지출로 등록되어 있어요</Text>
               ) : (
@@ -1526,6 +1602,9 @@ function MainApp({ profile, onSignOut }) {
               <TouchableOpacity style={[s.tab, addType === 'income' && s.tabOn]} onPress={() => setAddType('income')}>
                 <Text style={[s.tabT, addType === 'income' && { color: C.green }]}>수입</Text>
               </TouchableOpacity>
+              <TouchableOpacity style={[s.tab, addType === 'saving' && s.tabOn]} onPress={() => setAddType('saving')}>
+                <Text style={[s.tabT, addType === 'saving' && { color: C.gold }]}>저축</Text>
+              </TouchableOpacity>
             </View>
             {addType === 'expense' && (
               <View style={s.catGrid}>
@@ -1540,11 +1619,11 @@ function MainApp({ profile, onSignOut }) {
               </View>
             )}
             <TextInput style={s.input}
-              placeholder={addType === 'expense' ? '어디서 썼나요? (예: 김밥천국)' : '어디서 들어왔나요? (예: 월급)'}
+              placeholder={addType === 'expense' ? '어디서 썼나요? (예: 김밥천국)' : addType === 'income' ? '어디서 들어왔나요? (예: 월급)' : '어떤 적금·저축인가요? (예: 청약저축)'}
               placeholderTextColor={C.faint} value={addName} onChangeText={setAddName} />
             <TextInput style={s.input} placeholder="금액 (원)" placeholderTextColor={C.faint}
               keyboardType="number-pad" value={addAmt} onChangeText={v => setAddAmt(fmtInput(v))} />
-            <TouchableOpacity style={[s.bigBtn, addType === 'income' && { backgroundColor: C.green }]} activeOpacity={0.85} onPress={addManual}>
+            <TouchableOpacity style={[s.bigBtn, addType === 'income' && { backgroundColor: C.green }, addType === 'saving' && { backgroundColor: C.gold }]} activeOpacity={0.85} onPress={addManual}>
               <Text style={s.bigBtnT}>추가하기</Text>
             </TouchableOpacity>
           </View>
@@ -1835,6 +1914,8 @@ const s = StyleSheet.create({
   itemSub: { color: C.faint, fontSize: 12.5, marginTop: 2 },
   itemAmt: { color: C.text, fontWeight: '700', fontSize: 15.5, letterSpacing: -0.3 },
   itemMemo: { color: C.gold, fontSize: 12.5, marginTop: 3, lineHeight: 17 },
+  itemSplitHint: { color: C.faint, fontSize: 11.5, marginTop: 2 },
+  splitBaseAmt: { color: C.text, fontSize: 20, fontWeight: '800', marginTop: 2, marginBottom: 4, letterSpacing: -0.4 },
 
   calCard: { backgroundColor: C.card, borderRadius: 20, padding: 14, paddingBottom: 10, marginBottom: 12 },
   noSpendLine: { color: C.sub, fontSize: 13, fontWeight: '600', textAlign: 'center', marginBottom: 10 },
