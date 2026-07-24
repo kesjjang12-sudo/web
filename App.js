@@ -28,7 +28,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r23'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r24'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const LOCK_LIMIT = 100000;   // 하루 이만큼 넘게 쓰면 소명 요청
 const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
 // 건강 회복 타임라인 (일 기준)
@@ -220,6 +220,8 @@ function MainApp({ profile, onSignOut }) {
   const [addName, setAddName] = useState('');
   const [addAmt, setAddAmt] = useState('');
   const [addCat, setAddCat] = useState('food');
+  const [addDate, setAddDate] = useState(todayISO());
+  const [addErr, setAddErr] = useState('');
   const [showDeleted, setShowDeleted] = useState(false);
   const [budgetOpen, setBudgetOpen] = useState(false);
   const [budgetDraft, setBudgetDraft] = useState({ total: '', cats: {} });
@@ -514,16 +516,20 @@ function MainApp({ profile, onSignOut }) {
 
   const addManual = useCallback(async () => {
     const amount = parseInt(addAmt.replace(/[^\d]/g, ''), 10);
-    if (!addName.trim() || !amount) { Alert.alert('입력 확인', '이름과 금액을 입력해주세요.'); return; }
+    if (!addName.trim() || !amount) { setAddErr('이름과 금액을 입력해주세요.'); return; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(addDate) || isNaN(new Date(addDate))) { setAddErr('날짜 형식을 확인해주세요 (YYYY-MM-DD)'); return; }
+    const [y, m, d] = addDate.split('-').map(Number);
+    const now2 = new Date();
+    const ts = new Date(y, m - 1, d, now2.getHours(), now2.getMinutes(), now2.getSeconds()).toISOString();
     const next = await savePayment({
-      id: `m_${Date.now()}`, ts: new Date().toISOString(),
+      id: `m_${Date.now()}`, ts,
       merchant: addName.trim(), amount, app: 'manual',
       ...(addType === 'income' ? { type: 'income', category: 'etc' }
         : addType === 'saving' ? { type: 'saving', category: 'etc' }
         : { category: addCat }),
     });
-    setPayments([...next]); setAdding(false); setAddName(''); setAddAmt('');
-  }, [addName, addAmt, addCat, addType]);
+    setPayments([...next]); setAdding(false); setAddName(''); setAddAmt(''); setAddDate(todayISO()); setAddErr('');
+  }, [addName, addAmt, addCat, addType, addDate]);
 
   const confirmDelete = useCallback((p) => {
     Alert.alert('삭제할까요?', `${p.merchant} · ${won(p.amount)}원\n아래 "삭제된 항목"에서 복원할 수 있어요.`, [
@@ -1473,7 +1479,7 @@ function MainApp({ profile, onSignOut }) {
 
       {/* + 직접 추가 버튼 (가계부 탭에서만) */}
       {screen === 'home' && (
-        <TouchableOpacity style={s.fab} activeOpacity={0.8} onPress={() => { setAddType('expense'); setAddCat('food'); setAdding(true); }}>
+        <TouchableOpacity style={s.fab} activeOpacity={0.8} onPress={() => { setAddType('expense'); setAddCat('food'); setAddDate(todayISO()); setAddErr(''); setAdding(true); }}>
           <Text style={s.fabT}>＋</Text>
         </TouchableOpacity>
       )}
@@ -1623,6 +1629,10 @@ function MainApp({ profile, onSignOut }) {
               placeholderTextColor={C.faint} value={addName} onChangeText={setAddName} />
             <TextInput style={s.input} placeholder="금액 (원)" placeholderTextColor={C.faint}
               keyboardType="number-pad" value={addAmt} onChangeText={v => setAddAmt(fmtInput(v))} />
+            <Text style={s.budLabel}>날짜</Text>
+            <TextInput style={s.input} placeholder="2026-07-15" placeholderTextColor={C.faint}
+              value={addDate} onChangeText={setAddDate} />
+            {!!addErr && <Text style={s.authErr}>{addErr}</Text>}
             <TouchableOpacity style={[s.bigBtn, addType === 'income' && { backgroundColor: C.green }, addType === 'saving' && { backgroundColor: C.gold }]} activeOpacity={0.85} onPress={addManual}>
               <Text style={s.bigBtnT}>추가하기</Text>
             </TouchableOpacity>
