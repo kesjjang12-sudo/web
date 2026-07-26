@@ -177,13 +177,18 @@ async function rpc(name, body){
 }
 
 const CATS = {
-  food:   {label:'식비',      color:'#F2917A'},
-  cafe:   {label:'카페·간식', color:'#E5B84B'},
-  transit:{label:'교통',      color:'#6FB4F0'},
-  shop:   {label:'쇼핑',      color:'#B79CF5'},
-  living: {label:'생활·마트', color:'#5BC8C0'},
-  sub:    {label:'구독·통신', color:'#7F8EF2'},
-  etc:    {label:'기타',      color:'#97A1B0'},
+  food:    {label:'식비',        color:'#F2917A'},
+  cafe:    {label:'카페·간식',   color:'#E5B84B'},
+  transit: {label:'교통',        color:'#6FB4F0'},
+  shop:    {label:'쇼핑',        color:'#B79CF5'},
+  living:  {label:'생활·마트',   color:'#5BC8C0'},
+  health:  {label:'의료·건강',   color:'#F2739C'},
+  culture: {label:'문화·여가',   color:'#B36BE0'},
+  edu:     {label:'교육',        color:'#5FCB86'},
+  housing: {label:'주거·공과금', color:'#F2A65A'},
+  event:   {label:'경조사·선물', color:'#E85D5D'},
+  sub:     {label:'구독·통신',   color:'#7F8EF2'},
+  etc:     {label:'기타',        color:'#97A1B0'},
 };
 const won = n => Number(n).toLocaleString('ko-KR');
 const DAYS = ['일','월','화','수','목','금','토'];

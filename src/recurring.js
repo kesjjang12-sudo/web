@@ -59,6 +59,36 @@ export function cycleLabel(tpl) {
   return `${tpl.intervalDays}일마다`;
 }
 
+// ── 실제 알림/수동 기록이 등록된 고정지출과 같은 건인지 매칭 ──
+function normMerchant(s) { return (s || '').toLowerCase().replace(/\s+/g, ''); }
+
+export function merchantMatches(a, b) {
+  const na = normMerchant(a), nb = normMerchant(b);
+  if (!na || !nb) return false;
+  return na.includes(nb) || nb.includes(na);
+}
+
+export function amountMatches(a, b, tolerance = 0.3) {
+  if (!b) return false;
+  return Math.abs(a - b) / b <= tolerance;
+}
+
+// record: { merchant, amount, ts(ISO) }. 날짜가 주기상 발생 예정일 근처(±dayWindow일)인지,
+// 가맹점/금액이 비슷한지 함께 확인해서 실제 이체가 고정지출과 같은 건인지 판단.
+export function matchesRecurring(record, tpl, dayWindow = 3) {
+  if (!tpl.active) return false;
+  if (!merchantMatches(record.merchant, tpl.merchant)) return false;
+  if (!amountMatches(record.amount, tpl.amount)) return false;
+  const d = toDateOnly(new Date(record.ts));
+  const winStart = addDays(d, -dayWindow - 1); // occurrencesSince의 since는 제외 경계라 하루 더 당김
+  const winEnd = addDays(d, dayWindow);
+  return occurrencesSince(tpl, winStart, winEnd).length > 0;
+}
+
+export function findRecurringMatch(record, templates) {
+  return templates.find(tpl => matchesRecurring(record, tpl)) || null;
+}
+
 export function nextDueLabel(tpl) {
   const since = sinceAnchor(tpl);
   const far = new Date(since.getFullYear() + 2, 0, 1);

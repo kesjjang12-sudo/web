@@ -38,6 +38,9 @@ export function parsePayment(rawText) {
   // 카드값/요금이 통장에서 빠져나가는 알림은 제외 (개별 카드 결제가 이미 기록돼서 이중집계됨)
   if (/카드대금|카드값/.test(text)) return null;
   if (/출금되었습니다/.test(text)) return null; // "○○월 출금되었습니다", "회원님 ... 출금되었습니다" 등 청구서형 문자
+  // 아직 안 일어난 일을 미리 알리는 안내문자는 실제 결제가 아니므로 제외
+  // (예: "이자 000원이 07/20 출금 예정입니다", "납부 예정 안내")
+  if (/예정|납부일|납부하세요|납부바랍니다|청구서|연체/.test(text)) return null;
 
   const amount = parseInt(amountMatch[1].replace(/,/g, ''), 10);
   if (!amount || amount < 100) return null;

@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { guessCategory, parsePayment } from './parser';
 import { supabase, hasSupabase } from './supabase';
-import { occurrencesSince, sinceAnchor } from './recurring';
+import { occurrencesSince, sinceAnchor, findRecurringMatch } from './recurring';
 
 const KEY = 'payments_v1';
 const MERCHANT_CAT_KEY = 'merchant_categories_v1';
@@ -105,6 +105,36 @@ export async function getPayments() {
 
 export async function savePayment(record) {
   const list = await getPayments();
+
+  // 고정지출과 매칭되는 실제 이체/알림이면 자동생성 항목과 합치거나, 다음 자동생성을 건너뛰게 함
+  // (예: 매주 일요일 헌금 자동등록 + 실제 이체 알림이 둘 다 잡혀서 이중지출 되는 것 방지)
+  if (record.app !== 'recurring' && !record.recurringId && record.type !== 'income' && record.type !== 'saving') {
+    const templates = await getRecurring();
+    const matched = findRecurringMatch(record, templates.filter(t => t.active));
+    if (matched) {
+      const recTs = new Date(record.ts);
+      const dateKey = `${recTs.getFullYear()}-${String(recTs.getMonth()+1).padStart(2,'0')}-${String(recTs.getDate()).padStart(2,'0')}`;
+      const placeholder = list.find(p => p.recurringId === matched.id && p.app === 'recurring' && !p.deleted
+        && Math.abs(new Date(p.ts) - recTs) < 5 * 86400000);
+      if (placeholder) {
+        // 이미 자동으로 채워둔 항목을 실제 데이터로 교체 (별도 항목을 새로 만들지 않음)
+        placeholder.ts = record.ts;
+        placeholder.amount = record.amount;
+        placeholder.app = record.app;
+        if (record.category) placeholder.category = record.category;
+        placeholder.confirmed = true;
+        await AsyncStorage.setItem(KEY, JSON.stringify(list));
+        await advanceRecurringLastGenerated(matched.id, dateKey);
+        syncToSupabase(placeholder);
+        return list;
+      }
+      // 자동생성보다 실제 알림이 먼저 온 경우: 이 기록에 태그만 남기고 다음 자동생성을 건너뛰게 함
+      record.recurringId = matched.id;
+      record.confirmed = true;
+      await advanceRecurringLastGenerated(matched.id, dateKey);
+    }
+  }
+
   // 같은 알림 중복 방지 (10초 내 동일 금액+가맹점)
   const dup = list.find(p => p.merchant === record.merchant && p.amount === record.amount
     && Math.abs(new Date(p.ts) - new Date(record.ts)) < 10000);
@@ -117,6 +147,16 @@ export async function savePayment(record) {
   await AsyncStorage.setItem(KEY, JSON.stringify(next));
   syncToSupabase(record); // 실패해도 앱 동작에는 지장 없음
   return next;
+}
+
+async function advanceRecurringLastGenerated(id, dateKey) {
+  const list = await getRecurring();
+  const tpl = list.find(t => t.id === id);
+  if (!tpl) return;
+  if (!tpl.lastGenerated || tpl.lastGenerated < dateKey) {
+    tpl.lastGenerated = dateKey;
+    await saveRecurringList(list);
+  }
 }
 
 // 내역 수정 (카테고리/메모). 카테고리를 바꾸면 같은 가맹점을 기억해 이후 자동 분류에 반영
