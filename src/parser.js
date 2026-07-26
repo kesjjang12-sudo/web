@@ -13,7 +13,7 @@ const DATE_RE = /\d{1,2}\/\d{1,2}/g;
 const TIME_RE = /\d{1,2}:\d{2}/g;
 // 파싱에서 걸러낼 상투어
 const STOPWORDS = [
-  '승인', '취소', '일시불', '할부', '체크', '신용', '해외', '국내',
+  '승인', '취소', '환불', '승인취소', '일시불', '할부', '체크', '신용', '해외', '국내',
   '누적', '잔액', '출금', '입금', '결제', '됐어요', '되었습니다', '완료',
   'KRW', '원', '님', '고객님', '회원님', '카드', '에서', '사용', '법인', 'ZERO', '체크', '신용',
   '신한', '현대', '삼성', '국민', 'KB', '우리', '하나', 'NH', '농협', '롯데', '토스', '카카오뱅크', '카카오페이',
@@ -32,9 +32,10 @@ export function parsePayment(rawText) {
   // 결제 알림이 아닌 것 거르기 (광고, 이벤트 등)
   const amountMatch = text.match(AMOUNT_RE);
   if (!amountMatch) return null;
-  const isPayment = /승인|결제|사용|출금/.test(text);
+  const isPayment = /승인|결제|사용|출금|취소|환불/.test(text);
   if (!isPayment) return null;
-  if (/취소/.test(text)) return null; // 결제취소 알림 제외
+  // 결제 취소/환불 알림은 버리지 않고 refund 플래그를 달아서 원 결제를 상쇄하도록 함
+  const refund = /취소|환불/.test(text);
   // 카드값/요금이 통장에서 빠져나가는 알림은 제외 (개별 카드 결제가 이미 기록돼서 이중집계됨)
   if (/카드대금|카드값/.test(text)) return null;
   if (/출금되었습니다/.test(text)) return null; // "○○월 출금되었습니다", "회원님 ... 출금되었습니다" 등 청구서형 문자
@@ -59,7 +60,7 @@ export function parsePayment(rawText) {
     .filter(t => {
       if (!t || t.length < 2) return false;
       if (STOPWORDS.some(sw => t === sw || t === sw + '님')) return false;
-      if (/카드|승인|결제|뱅크|페이$|Web발신/i.test(t)) return false; // 카드사/승인 토큰 제거
+      if (/카드|승인|결제|취소|환불|뱅크|페이$|Web발신/i.test(t)) return false; // 카드사/승인 토큰 제거
       if (/^[\d,./:-]+$/.test(t)) return false;
       if (/^[\d-]{6,}$/.test(t)) return false;   // 1588-9955 같은 발신번호
       return true;
@@ -67,7 +68,7 @@ export function parsePayment(rawText) {
   // 남은 토큰 중 가장 뒤쪽(카드알림은 보통 가맹점이 마지막) 최대 3개를 가맹점명으로
   const merchant = tokens.slice(-3).join(' ').trim() || '알수없음';
 
-  return { merchant, amount, raw: text };
+  return { merchant, amount, raw: text, ...(refund ? { refund: true } : {}) };
 }
 
 // ---------------------------------------------

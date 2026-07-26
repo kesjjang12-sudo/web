@@ -14,6 +14,8 @@ import {
   getRecurring, addRecurring, updateRecurring, deleteRecurring, runRecurringGenerator,
   applySplit, clearSplit,
   getGoals, addGoal, updateGoal, deleteGoal,
+  getKnownTags, parseTags, setPaymentTags, recategorizeMerchant, countOtherCategory,
+  backupNow, restoreFromBackup, getLastBackupAt, fetchBackupInfo, autoRestoreIfEmpty,
 } from './src/store';
 import { cycleLabel, nextDueLabel, addDays as addDaysLocal } from './src/recurring';
 import { goalRange, goalPeriodLabel, goalKindLabel, daysLeftLabel } from './src/goals';
@@ -30,7 +32,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r26'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r27'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const LOCK_LIMIT = 100000;   // 하루 이만큼 넘게 쓰면 소명 요청
 const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
 // 건강 회복 타임라인 (일 기준)
@@ -104,6 +106,7 @@ export default function Root() {
     // 프로필/시작일 동기화는 실패해도 앱 진입을 막지 않음 (네트워크 문제로 영원히 로딩에 갇히는 것 방지)
     const afterLogin = async () => {
       try {
+        await autoRestoreIfEmpty(); // 새 폰/재설치면 서버 백업에서 자동 복원
         const p = await getMyProfile();
         setProfile(p);
         if (p && p.sober_start == null) {
@@ -217,6 +220,11 @@ function MainApp({ profile, onSignOut }) {
   const [splitOpen, setSplitOpen] = useState(false);
   const [splitPeople, setSplitPeople] = useState('');
   const [splitAmount, setSplitAmount] = useState('');
+  const [editTags, setEditTags] = useState('');
+  const [knownTags, setKnownTags] = useState([]);
+  const [filterTag, setFilterTag] = useState(null);
+  const [lastBackup, setLastBackup] = useState(null);
+  const [backupBusy, setBackupBusy] = useState(false);
   const [adding, setAdding] = useState(false);
   const [addType, setAddType] = useState('expense'); // 'expense' | 'income'
   const [addName, setAddName] = useState('');
@@ -273,18 +281,28 @@ function MainApp({ profile, onSignOut }) {
 
   const load = useCallback(async () => {
     await runRecurringGenerator(); // 도래한 고정지출을 먼저 자동 기록
-    const [p, b, d, q, qd, ex, ch, rec, gl, st] = await Promise.all([
+    const [p, b, d, q, qd, ex, ch, rec, gl, tg, bk, st] = await Promise.all([
       getPayments(), getBudgets(), getDiary(), getQuitSettings(), getQuitDates(),
       getExplanations(), fetchCheers(), getRecurring(), getGoals(),
+      getKnownTags(), getLastBackupAt(),
       RNAndroidNotificationListener.getPermissionStatus(),
     ]);
     setPayments(p); setBudgets(b); setDiary(d); setQuitSet(q); setQuitDates(qd);
-    setExplanations(ex); setCheers(ch); setRecurList(rec); setGoals(gl); setPerm(st);
+    setExplanations(ex); setCheers(ch); setRecurList(rec); setGoals(gl);
+    setKnownTags(tg); setLastBackup(bk); setPerm(st);
   }, []);
 
   useEffect(() => {
     load();
     syncAll();
+    // 폰에만 있는 데이터(일기/예산/목표 등)를 하루 한 번 자동 백업
+    (async () => {
+      const last = await getLastBackupAt();
+      if (!last || Date.now() - new Date(last).getTime() > 86400000) {
+        const res = await backupNow();
+        if (res.ok) setLastBackup(new Date().toISOString());
+      }
+    })();
     const sub = AppState.addEventListener('change', st => { if (st === 'active') load(); });
     const t = setInterval(load, 20000);
     return () => { sub.remove(); clearInterval(t); };
@@ -305,10 +323,12 @@ function MainApp({ profile, onSignOut }) {
     return d.getFullYear() === ym.getFullYear() && d.getMonth() === ym.getMonth();
   };
   // 지출 (삭제/수입 제외)
-  const monthPays = useMemo(() => payments.filter(p => !p.deleted && !isIncome(p) && !isSaving(p) && inMonth(p, viewYM)), [payments, monthOffset]);
+  const monthPays = useMemo(() => payments.filter(p => !p.deleted && !p.refunded && !p.isRefund && !isIncome(p) && !isSaving(p) && inMonth(p, viewYM)), [payments, monthOffset]);
   const monthIncome = useMemo(() => payments.filter(p => !p.deleted && isIncome(p) && inMonth(p, viewYM)), [payments, monthOffset]);
   const monthSaving = useMemo(() => payments.filter(p => !p.deleted && isSaving(p) && inMonth(p, viewYM)), [payments, monthOffset]);
   const monthDeleted = useMemo(() => payments.filter(p => p.deleted && inMonth(p, viewYM)), [payments, monthOffset]);
+  // 환불된 결제/짝 없는 환불 기록 — 합계에는 안 들어가지만 목록에는 표시해서 확인할 수 있게 함
+  const monthRefunded = useMemo(() => payments.filter(p => !p.deleted && (p.refunded || p.isRefund) && inMonth(p, viewYM)), [payments, monthOffset]);
   const total = monthPays.reduce((s, p) => s + p.amount, 0);
   const incomeTotal = monthIncome.reduce((s, p) => s + p.amount, 0);
   const savingTotal = monthSaving.reduce((s, p) => s + p.amount, 0);
@@ -318,7 +338,7 @@ function MainApp({ profile, onSignOut }) {
     const prevYM = new Date(viewYM.getFullYear(), viewYM.getMonth() - 1, 1);
     const sameWindow = monthOffset === 0;
     return payments.filter(p => {
-      if (p.deleted || isIncome(p) || isSaving(p) || !inMonth(p, prevYM)) return false;
+      if (p.deleted || p.refunded || p.isRefund || isIncome(p) || isSaving(p) || !inMonth(p, prevYM)) return false;
       return sameWindow ? new Date(p.ts).getDate() <= now.getDate() : true;
     });
   }, [payments, monthOffset]);
@@ -341,13 +361,18 @@ function MainApp({ profile, onSignOut }) {
 
   // 검색/필터 적용된 내역 (내역 탭)
   const listPays = useMemo(() => {
-    const all = [...monthPays, ...monthIncome, ...monthSaving].sort((a,b) => new Date(b.ts) - new Date(a.ts));
+    const all = [...monthPays, ...monthIncome, ...monthSaving, ...monthRefunded].sort((a,b) => new Date(b.ts) - new Date(a.ts));
     return all.filter(p => {
       if (filterCats.length > 0 && (isIncome(p) || isSaving(p) || !filterCats.includes(CAT[p.category] ? p.category : 'etc'))) return false;
-      if (search.trim() && !(p.merchant + (p.memo||'')).toLowerCase().includes(search.trim().toLowerCase())) return false;
+      if (filterTag && !(p.tags || []).includes(filterTag)) return false;
+      if (search.trim()) {
+        const q = search.trim().toLowerCase();
+        const hay = (p.merchant + (p.memo || '') + (p.tags || []).join(' ')).toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
       return true;
     });
-  }, [monthPays, monthIncome, monthSaving, search, filterCats]);
+  }, [monthPays, monthIncome, monthSaving, monthRefunded, search, filterCats, filterTag]);
 
   // 체크한 카테고리 합계 (검색어와 무관하게, 이 달 전체 기준)
   const filterSum = useMemo(() => {
@@ -395,7 +420,7 @@ function MainApp({ profile, onSignOut }) {
     const out = [];
     for (let i = 5; i >= 0; i--) {
       const ym = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const sum = payments.filter(p => !p.deleted && !isIncome(p) && !isSaving(p) && inMonth(p, ym)).reduce((s,p) => s+p.amount, 0);
+      const sum = payments.filter(p => !p.deleted && !p.refunded && !p.isRefund && !isIncome(p) && !isSaving(p) && inMonth(p, ym)).reduce((s,p) => s+p.amount, 0);
       out.push({ label: `${ym.getMonth()+1}월`, sum, cur: i === 0 });
     }
     return out;
@@ -406,8 +431,8 @@ function MainApp({ profile, onSignOut }) {
   const recurring = useMemo(() => {
     const prevYM = new Date(viewYM.getFullYear(), viewYM.getMonth() - 1, 1);
     const cur = {}, prv = {};
-    payments.filter(p => !p.deleted && !isIncome(p) && !isSaving(p) && inMonth(p, viewYM)).forEach(p => { cur[p.merchant] = (cur[p.merchant]||0) + p.amount; });
-    payments.filter(p => !p.deleted && !isIncome(p) && !isSaving(p) && inMonth(p, prevYM)).forEach(p => { prv[p.merchant] = (prv[p.merchant]||0) + p.amount; });
+    payments.filter(p => !p.deleted && !p.refunded && !p.isRefund && !isIncome(p) && !isSaving(p) && inMonth(p, viewYM)).forEach(p => { cur[p.merchant] = (cur[p.merchant]||0) + p.amount; });
+    payments.filter(p => !p.deleted && !p.refunded && !p.isRefund && !isIncome(p) && !isSaving(p) && inMonth(p, prevYM)).forEach(p => { prv[p.merchant] = (prv[p.merchant]||0) + p.amount; });
     return Object.entries(cur)
       .filter(([m, v]) => prv[m] && Math.abs(v - prv[m]) / Math.max(v, prv[m]) <= 0.2)
       .sort((a,b) => b[1]-a[1]);
@@ -415,12 +440,74 @@ function MainApp({ profile, onSignOut }) {
 
   // 고정지출 월 환산 합계 (매일/N일마다인 것도 한 달 기준으로 환산해서 더함)
   const recurMonthlyTotal = useMemo(() => {
-    return recurList.filter(t => t.active).reduce((sum, t) => {
+    return recurList.filter(t => t.active && t.type !== 'income').reduce((sum, t) => {
       if (t.cycle === 'monthly') return sum + t.amount;
       if (t.cycle === 'daily') return sum + t.amount * 30;
       return sum + t.amount * (30 / Math.max(1, t.intervalDays || 1));
     }, 0);
   }, [recurList]);
+
+  // 오늘 쓸 수 있는 돈: (남은 예산 ÷ 이번 달 남은 일수)
+  const dailyAllowance = useMemo(() => {
+    if (!isThisMonth || !budgets.total) return null;
+    const spentBeforeToday = monthPays
+      .filter(p => new Date(p.ts).getDate() < todayDate)
+      .reduce((s, p) => s + p.amount, 0);
+    const spentToday = total - spentBeforeToday;
+    const daysLeft = daysInViewMonth - todayDate + 1;
+    const perDay = Math.floor(Math.max(0, budgets.total - spentBeforeToday) / Math.max(1, daysLeft));
+    return { perDay, spentToday, left: perDay - spentToday, daysLeft };
+  }, [budgets.total, monthPays, total, isThisMonth, todayDate, daysInViewMonth]);
+
+  // 카드/출처별 지출
+  const bySource = useMemo(() => {
+    const sums = {};
+    monthPays.forEach(p => { const k = srcName(p.app); sums[k] = (sums[k] || 0) + p.amount; });
+    return Object.entries(sums).sort((a, b) => b[1] - a[1]);
+  }, [monthPays]);
+
+  // 연간 리포트: 올해 월별 지출 + 카테고리 합계 + 작년 대비
+  const yearReport = useMemo(() => {
+    const y = viewYM.getFullYear();
+    const inYear = (p, yy) => !p.deleted && !p.refunded && !p.isRefund && !isIncome(p) && !isSaving(p)
+      && new Date(p.ts).getFullYear() === yy;
+    const months = Array.from({ length: 12 }, () => 0);
+    const cats = {};
+    let yTotal = 0;
+    payments.filter(p => inYear(p, y)).forEach(p => {
+      const d = new Date(p.ts);
+      months[d.getMonth()] += p.amount;
+      const k = CAT[p.category] ? p.category : 'etc';
+      cats[k] = (cats[k] || 0) + p.amount;
+      yTotal += p.amount;
+    });
+    const prevTotal = payments.filter(p => inYear(p, y - 1)).reduce((s, p) => s + p.amount, 0);
+    const activeMonths = months.filter(v => v > 0).length;
+    return {
+      year: y, months, yTotal, prevTotal, activeMonths,
+      avg: activeMonths ? Math.round(yTotal / activeMonths) : 0,
+      cats: Object.entries(cats).sort((a, b) => b[1] - a[1]),
+      max: Math.max(...months, 1),
+    };
+  }, [payments, monthOffset]);
+
+  // 소비 습관: 이번 달 3회 이상 반복된 가맹점 (횟수·합계)
+  const habits = useMemo(() => {
+    const groups = {};
+    monthPays.forEach(p => {
+      const k = p.merchant;
+      if (!groups[k]) groups[k] = { merchant: k, count: 0, sum: 0, cat: CAT[p.category] ? p.category : 'etc' };
+      groups[k].count++; groups[k].sum += p.amount;
+    });
+    return Object.values(groups).filter(g => g.count >= 3).sort((a, b) => b.sum - a.sum).slice(0, 6);
+  }, [monthPays]);
+
+  // 이번 달 사용된 태그별 합계
+  const tagTotals = useMemo(() => {
+    const sums = {};
+    monthPays.forEach(p => (p.tags || []).forEach(t => { sums[t] = (sums[t] || 0) + p.amount; }));
+    return Object.entries(sums).sort((a, b) => b[1] - a[1]);
+  }, [monthPays]);
 
   // 목표별 진행 현황 (전체 payments 기준 — 주간/월간은 오늘 기준으로 계산되는 기간)
   const goalStatus = useMemo(() => {
@@ -428,7 +515,7 @@ function MainApp({ profile, onSignOut }) {
     return goals.map(g => {
       const { start, end } = goalRange(g, todayMid);
       const spent = payments.filter(p => {
-        if (p.deleted || isIncome(p) || isSaving(p)) return false;
+        if (p.deleted || p.refunded || p.isRefund || isIncome(p) || isSaving(p)) return false;
         const d = new Date(p.ts);
         return d >= start && d < addDaysLocal(end, 1);
       }).reduce((s, p) => s + p.amount, 0);
@@ -440,7 +527,7 @@ function MainApp({ profile, onSignOut }) {
   const openRecurAdd = useCallback(() => {
     setRecurEditId(null); setRecurErr('');
     setRecurDraft({
-      merchant: '', amount: '', category: 'sub', memo: '',
+      merchant: '', amount: '', category: 'sub', memo: '', type: 'expense',
       cycle: 'monthly', dayOfMonth: String(new Date().getDate()), intervalDays: '7',
       startDate: todayISO(), fromPaymentId: null,
     });
@@ -451,7 +538,7 @@ function MainApp({ profile, onSignOut }) {
     const d = new Date(p.ts);
     setRecurEditId(null); setRecurErr('');
     setRecurDraft({
-      merchant: p.merchant, amount: fmtInput(p.amount), category: CAT[p.category] ? p.category : 'etc', memo: '',
+      merchant: p.merchant, amount: fmtInput(p.amount), category: CAT[p.category] ? p.category : 'etc', memo: '', type: 'expense',
       cycle: 'monthly', dayOfMonth: String(d.getDate()), intervalDays: '7',
       startDate: dkey(d), fromPaymentId: p.id,
     });
@@ -462,7 +549,7 @@ function MainApp({ profile, onSignOut }) {
   const openRecurEdit = useCallback((tpl) => {
     setRecurEditId(tpl.id); setRecurErr('');
     setRecurDraft({
-      merchant: tpl.merchant, amount: fmtInput(tpl.amount), category: tpl.category, memo: tpl.memo || '',
+      merchant: tpl.merchant, amount: fmtInput(tpl.amount), category: tpl.category, memo: tpl.memo || '', type: tpl.type || 'expense',
       cycle: tpl.cycle, dayOfMonth: String(tpl.dayOfMonth || new Date().getDate()), intervalDays: String(tpl.intervalDays || 7),
       startDate: tpl.startDate, fromPaymentId: null,
     });
@@ -480,6 +567,7 @@ function MainApp({ profile, onSignOut }) {
     const tpl = {
       merchant: d.merchant.trim(), amount, category: d.category, memo: d.memo.trim(),
       cycle: d.cycle, dayOfMonth: Number(d.dayOfMonth), intervalDays: Number(d.intervalDays), startDate: d.startDate,
+      ...(d.type === 'income' ? { type: 'income' } : { type: 'expense' }),
     };
     let next;
     if (recurEditId) next = await updateRecurring(recurEditId, tpl);
@@ -542,6 +630,7 @@ function MainApp({ profile, onSignOut }) {
   const openEdit = useCallback((p) => {
     setEditCat(CAT[p.category] ? p.category : 'etc');
     setEditMemo(p.memo || '');
+    setEditTags((p.tags || []).map(t => '#' + t).join(' '));
     setSplitOpen(false);
     setSplitPeople(p.splitCount ? String(p.splitCount) : '');
     setSplitAmount(fmtInput(p.amount));
@@ -549,11 +638,54 @@ function MainApp({ profile, onSignOut }) {
   }, []);
 
   const saveEdit = useCallback(async () => {
-    const next = await updateItem(pickTarget.id, {
-      category: (isIncome(pickTarget) || isSaving(pickTarget)) ? undefined : editCat, memo: editMemo.trim(),
+    const target = pickTarget;
+    const catChanged = !isIncome(target) && !isSaving(target) && target.category !== editCat;
+    await updateItem(target.id, {
+      category: (isIncome(target) || isSaving(target)) ? undefined : editCat, memo: editMemo.trim(),
     });
-    setPayments([...next]); setPickTarget(null);
-  }, [pickTarget, editCat, editMemo]);
+    const next = await setPaymentTags(target.id, parseTags(editTags));
+    setPayments([...next]); setKnownTags(await getKnownTags()); setPickTarget(null);
+
+    // 같은 가맹점의 과거 기록도 함께 바꿀지 물어보기
+    if (catChanged) {
+      const others = await countOtherCategory(target.merchant, editCat);
+      if (others > 0) {
+        Alert.alert('과거 기록도 바꿀까요?',
+          `"${target.merchant}" 기록 ${others}건이 다른 카테고리예요.\n전부 "${CAT[editCat].label}"(으)로 바꿀까요?`, [
+          { text: '아니요', style: 'cancel' },
+          { text: `${others}건 모두 변경`, onPress: async () => {
+            const res = await recategorizeMerchant(target.merchant, editCat);
+            setPayments([...res.list]);
+          } },
+        ]);
+      }
+    }
+  }, [pickTarget, editCat, editMemo, editTags]);
+
+  // ── 백업 / 복구 ──
+  const doBackup = useCallback(async () => {
+    setBackupBusy(true);
+    const res = await backupNow();
+    setBackupBusy(false);
+    if (res.ok) { setLastBackup(new Date().toISOString()); Alert.alert('백업 완료', '일기·예산·목표·고정지출이 안전하게 저장됐어요.'); }
+    else Alert.alert('백업 실패', res.reason === 'no-user' ? '로그인이 필요해요.' : '잠시 후 다시 시도해주세요.');
+  }, []);
+
+  const doRestore = useCallback(async () => {
+    const at = await fetchBackupInfo();
+    if (!at) { Alert.alert('복구할 백업이 없어요', '먼저 백업을 한 번 해주세요.'); return; }
+    Alert.alert('백업에서 복구할까요?',
+      `${new Date(at).toLocaleString('ko-KR')} 백업으로 되돌립니다.\n지금 폰에 있는 일기·예산·목표는 덮어써져요.`, [
+      { text: '취소', style: 'cancel' },
+      { text: '복구', style: 'destructive', onPress: async () => {
+        setBackupBusy(true);
+        const res = await restoreFromBackup();
+        setBackupBusy(false);
+        if (res.ok) { await load(); Alert.alert('복구 완료', '백업 시점의 데이터로 되돌렸어요.'); }
+        else Alert.alert('복구 실패', '백업을 불러오지 못했어요.');
+      } },
+    ]);
+  }, [load]);
 
   // ── 엔빵(나눠 내기) ──
   const splitBase = pickTarget ? (pickTarget.originalAmount ?? pickTarget.amount) : 0;
@@ -660,7 +792,7 @@ function MainApp({ profile, onSignOut }) {
   const lockTarget = useMemo(() => {
     const totals = {}, itemsByDay = {};
     payments.forEach(p => {
-      if (p.deleted || isIncome(p) || isSaving(p)) return;
+      if (p.deleted || p.refunded || p.isRefund || isIncome(p) || isSaving(p)) return;
       const d = new Date(p.ts);
       const diff = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
       if (diff < 0 || diff > 14) return;
@@ -688,7 +820,7 @@ function MainApp({ profile, onSignOut }) {
     const sumRange = (from, to, byCat) => { // from/to: 일수 전 (from > to)
       const out = byCat ? {} : { total: 0 };
       payments.forEach(p => {
-        if (p.deleted || isIncome(p) || isSaving(p)) return;
+        if (p.deleted || p.refunded || p.isRefund || isIncome(p) || isSaving(p)) return;
         const d = new Date(p.ts);
         const diff = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
         if (diff > from || diff < to) return;
@@ -877,23 +1009,31 @@ function MainApp({ profile, onSignOut }) {
   const renderItem = (p, fromDaySheet) => {
     const inc = isIncome(p);
     const sav = isSaving(p);
+    const refunded = !!(p.refunded || p.isRefund);
     const cat = inc ? { label: '수입', color: C.green } : sav ? { label: '저축', color: C.gold } : (CAT[p.category] || CAT.etc);
     return (
-      <TouchableOpacity key={p.id} style={s.item} activeOpacity={0.6}
+      <TouchableOpacity key={p.id} style={[s.item, refunded && { opacity: 0.55 }]} activeOpacity={0.6}
         onPress={() => { if (fromDaySheet) setSelDay(null); openEdit(p); }}
         onLongPress={() => { if (fromDaySheet) setSelDay(null); confirmDelete(p); }} delayLongPress={450}>
         <View style={[s.dot, { backgroundColor: cat.color + '26' }]}>
           <View style={[s.dotCore, { backgroundColor: cat.color }]} />
         </View>
         <View style={{ flex: 1, minWidth: 0 }}>
-          <Text style={s.itemName} numberOfLines={1}>{p.recurringId ? '📌 ' : ''}{p.merchant}</Text>
-          <Text style={s.itemSub}>{hhmm(p.ts)} · {srcName(p.app)} · {cat.label}</Text>
+          <Text style={[s.itemName, refunded && s.itemNameRefunded]} numberOfLines={1}>
+            {p.recurringId ? '📌 ' : ''}{p.merchant}
+          </Text>
+          <Text style={s.itemSub}>{hhmm(p.ts)} · {srcName(p.app)} · {refunded ? (p.isRefund ? '환불 내역' : '환불됨') : cat.label}</Text>
           {p.originalAmount != null && (
             <Text style={s.itemSplitHint}>원래 {won(p.originalAmount)}원{p.splitCount ? ` · ${p.splitCount}명이서 나눔` : ''}</Text>
           )}
+          {!!(p.tags && p.tags.length) && (
+            <Text style={s.itemTags} numberOfLines={1}>{p.tags.map(t => '#' + t).join(' ')}</Text>
+          )}
           {!!p.memo && <Text style={s.itemMemo} numberOfLines={2}>{p.memo}</Text>}
         </View>
-        <Text style={[s.itemAmt, (inc || sav) && { color: inc ? C.green : C.gold }]}>{(inc || sav) ? '+' : ''}{won(p.amount)}원</Text>
+        <Text style={[s.itemAmt, (inc || sav) && { color: inc ? C.green : C.gold }, refunded && s.itemAmtRefunded]}>
+          {(inc || sav) ? '+' : ''}{won(p.amount)}원
+        </Text>
       </TouchableOpacity>
     );
   };
@@ -1005,6 +1145,20 @@ function MainApp({ profile, onSignOut }) {
             </View>
           )}
 
+          {/* 오늘 쓸 수 있는 돈 */}
+          {dailyAllowance && (
+            <View style={s.todayBox}>
+              <Text style={s.todayLabel}>오늘 쓸 수 있는 돈</Text>
+              <Text style={[s.todayAmt, { color: dailyAllowance.left < 0 ? C.red : C.blueText }]}>
+                {won(Math.max(0, dailyAllowance.left))}원
+              </Text>
+              <Text style={s.todaySub}>
+                하루 {won(dailyAllowance.perDay)}원 기준 · 오늘 {won(dailyAllowance.spentToday)}원 씀
+                {dailyAllowance.left < 0 ? ` · ${won(-dailyAllowance.left)}원 초과` : ''} · {dailyAllowance.daysLeft}일 남음
+              </Text>
+            </View>
+          )}
+
           {/* 카테고리 바 */}
           {catRows.length > 0 && (
             <View style={{ marginTop: 18, gap: 12 }}>
@@ -1094,7 +1248,8 @@ function MainApp({ profile, onSignOut }) {
             <Text style={[s.statEmpty, { paddingBottom: 10 }]}>넷플릭스, 월세처럼 반복되는 지출을 등록해두면{'\n'}주기마다 자동으로 기록돼요.</Text>
           )}
           {recurList.map(tpl => {
-            const cat = CAT[tpl.category] || CAT.etc;
+            const isInc = tpl.type === 'income';
+            const cat = isInc ? { label: '수입', color: C.green } : (CAT[tpl.category] || CAT.etc);
             return (
               <TouchableOpacity key={tpl.id} style={s.item} activeOpacity={0.6} onPress={() => openRecurEdit(tpl)}>
                 <View style={[s.dot, { backgroundColor: cat.color + '26' }]}>
@@ -1104,7 +1259,7 @@ function MainApp({ profile, onSignOut }) {
                   <Text style={s.itemName} numberOfLines={1}>{tpl.merchant}</Text>
                   <Text style={s.itemSub}>{cycleLabel(tpl)} · {nextDueLabel(tpl)}{!tpl.active ? ' · 일시정지' : ''}</Text>
                 </View>
-                <Text style={s.itemAmt}>{won(tpl.amount)}원</Text>
+                <Text style={[s.itemAmt, isInc && { color: C.green }]}>{isInc ? '+' : ''}{won(tpl.amount)}원</Text>
               </TouchableOpacity>
             );
           })}
@@ -1149,13 +1304,25 @@ function MainApp({ profile, onSignOut }) {
                 <Text style={s.filterSumPct}>이 달 전체의 {total > 0 ? Math.round(filterSum / total * 100) : 0}%</Text>
               </View>
             )}
+
+            {/* 태그 필터 */}
+            {tagTotals.length > 0 && (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.filterRow} keyboardShouldPersistTaps="handled">
+                {tagTotals.map(([t, v]) => (
+                  <TouchableOpacity key={t} style={[s.filterChip, filterTag === t && s.filterChipOn]}
+                    onPress={() => setFilterTag(filterTag === t ? null : t)}>
+                    <Text style={[s.filterChipT, filterTag === t && { color: C.text }]}>#{t} {won(v)}원</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            )}
             {groups.map(g => {
               const gk = dkey(new Date(g.items[0].ts));
               return (
                 <View key={g.label} style={s.dayCard}>
                   <View style={s.dayHead}>
                     <Text style={s.dayHeadT}>{g.label}</Text>
-                    <Text style={s.dayHeadT}>{won(g.items.filter(x => !isIncome(x) && !isSaving(x)).reduce((s2,x)=>s2+x.amount,0))}원</Text>
+                    <Text style={s.dayHeadT}>{won(g.items.filter(x => !isIncome(x) && !isSaving(x) && !x.refunded && !x.isRefund).reduce((s2,x)=>s2+x.amount,0))}원</Text>
                   </View>
                   {explanations[gk] && (
                     <Text style={s.explainLine}>📋 소명: {explanations[gk]}</Text>
@@ -1210,6 +1377,73 @@ function MainApp({ profile, onSignOut }) {
         {/* ── 통계 뷰 ── */}
         {view === 'stat' && (
           <>
+            {/* 소비 습관 */}
+            {habits.length > 0 && (
+              <View style={s.statCard}>
+                <Text style={s.statTitle}>{viewYM.getMonth()+1}월 자주 간 곳 ☕</Text>
+                {habits.map(h => (
+                  <View key={h.merchant} style={s.recurRow}>
+                    <View style={{ flex: 1, marginRight: 10 }}>
+                      <Text style={s.recurName} numberOfLines={1}>{h.merchant}</Text>
+                      <Text style={s.itemSub}>{h.count}번 · 평균 {won(Math.round(h.sum / h.count))}원</Text>
+                    </View>
+                    <Text style={[s.recurAmt, { color: CAT[h.cat].color }]}>{won(h.sum)}원</Text>
+                  </View>
+                ))}
+                <Text style={s.statEmpty}>이번 달 3번 이상 결제한 곳이에요</Text>
+              </View>
+            )}
+
+            {/* 카드·출처별 지출 */}
+            {bySource.length > 0 && (
+              <View style={s.statCard}>
+                <Text style={s.statTitle}>{viewYM.getMonth()+1}월 결제수단별</Text>
+                {bySource.map(([k, v]) => (
+                  <View key={k} style={s.recurRow}>
+                    <Text style={s.recurName}>{k}</Text>
+                    <Text style={s.recurAmt}>{won(v)}원 <Text style={{ color: C.faint, fontWeight: '600', fontSize: 12 }}>
+                      {total > 0 ? Math.round(v / total * 100) : 0}%</Text></Text>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            {/* 연간 리포트 */}
+            <View style={s.statCard}>
+              <Text style={s.statTitle}>{yearReport.year}년 리포트 📅</Text>
+              <Text style={[s.total, { fontSize: 28 }]}>{won(yearReport.yTotal)}원</Text>
+              <Text style={s.projLine}>
+                월 평균 {won(yearReport.avg)}원
+                {yearReport.prevTotal > 0 && (
+                  yearReport.yTotal >= yearReport.prevTotal
+                    ? ` · 작년보다 ${won(yearReport.yTotal - yearReport.prevTotal)}원 더 씀`
+                    : ` · 작년보다 ${won(yearReport.prevTotal - yearReport.yTotal)}원 아낌`
+                )}
+              </Text>
+              <View style={[s.trendRow, { marginTop: 14, height: 110 }]}>
+                {yearReport.months.map((v, i) => (
+                  <View key={i} style={s.trendCol}>
+                    <View style={[s.trendBar, {
+                      width: 14,
+                      height: Math.max(3, v / yearReport.max * 76),
+                      backgroundColor: i === now.getMonth() && yearReport.year === now.getFullYear() ? C.blue : C.card2,
+                    }]} />
+                    <Text style={[s.trendLabel, { fontSize: 9.5 }]}>{i + 1}</Text>
+                  </View>
+                ))}
+              </View>
+              {yearReport.cats.length > 0 && (
+                <View style={{ marginTop: 14, gap: 8 }}>
+                  {yearReport.cats.slice(0, 5).map(([k, v]) => (
+                    <View key={k} style={s.recurRow}>
+                      <Text style={s.recurName}>{CAT[k].label}</Text>
+                      <Text style={[s.recurAmt, { color: CAT[k].color }]}>{won(v)}원</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+            </View>
+
             <View style={s.statCard}>
               <Text style={s.statTitle}>최근 6개월 지출</Text>
               <View style={s.trendRow}>
@@ -1645,6 +1879,18 @@ function MainApp({ profile, onSignOut }) {
             )}
             <TextInput style={s.input} placeholder="메모 (예: 친구랑 점심, 회사 경비 처리)" placeholderTextColor={C.faint}
               value={editMemo} onChangeText={setEditMemo} />
+            <TextInput style={s.input} placeholder="태그 (예: #제주도여행 #회사경비)" placeholderTextColor={C.faint}
+              autoCapitalize="none" value={editTags} onChangeText={setEditTags} />
+            {knownTags.length > 0 && (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8, flexGrow: 0 }} keyboardShouldPersistTaps="handled">
+                {knownTags.slice(0, 12).map(t => (
+                  <TouchableOpacity key={t} style={s.tagSuggest}
+                    onPress={() => setEditTags(prev => parseTags(prev).includes(t) ? prev : (prev.trim() + ' #' + t).trim())}>
+                    <Text style={s.tagSuggestT}>#{t}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            )}
             <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={saveEdit}>
               <Text style={s.bigBtnT}>저장</Text>
             </TouchableOpacity>
@@ -1750,6 +1996,24 @@ function MainApp({ profile, onSignOut }) {
             <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={shareLinkNative} disabled={!shareLink}>
               <Text style={s.bigBtnT}>카톡 등으로 보내기</Text>
             </TouchableOpacity>
+            <View style={s.backupBox}>
+              <Text style={s.backupTitle}>백업 · 복구</Text>
+              <Text style={s.backupSub}>
+                일기·예산·목표·고정지출은 폰에만 저장돼요. 백업해두면 폰을 바꿔도 복구할 수 있어요.{'\n'}
+                {lastBackup ? `마지막 백업: ${new Date(lastBackup).toLocaleString('ko-KR')}` : '아직 백업한 적 없어요'}
+              </Text>
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                <TouchableOpacity style={[s.bigBtn, { flex: 1, marginTop: 0 }]} activeOpacity={0.85}
+                  onPress={doBackup} disabled={backupBusy}>
+                  {backupBusy ? <ActivityIndicator color="#fff" /> : <Text style={s.bigBtnT}>지금 백업</Text>}
+                </TouchableOpacity>
+                <TouchableOpacity style={[s.bigBtn, { flex: 1, marginTop: 0, backgroundColor: C.card2 }]} activeOpacity={0.85}
+                  onPress={doRestore} disabled={backupBusy}>
+                  <Text style={[s.bigBtnT, { color: C.text }]}>복구하기</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
             <TouchableOpacity style={{ marginTop: 20, alignItems: 'center' }} onPress={confirmSignOut}>
               <Text style={{ color: C.red, fontWeight: '700', fontSize: 14 }}>로그아웃</Text>
             </TouchableOpacity>
@@ -1899,21 +2163,35 @@ function MainApp({ profile, onSignOut }) {
             <Text style={s.modalSub}>주기가 돌아올 때마다 자동으로 지출이 기록돼요.</Text>
             {recurDraft && (
               <ScrollView style={{ maxHeight: 420 }} keyboardShouldPersistTaps="handled">
-                <TextInput style={s.input} placeholder="이름 (예: 넷플릭스, 월세)" placeholderTextColor={C.faint}
+                <View style={s.tabs}>
+                  <TouchableOpacity style={[s.tab, recurDraft.type !== 'income' && s.tabOn]}
+                    onPress={() => setRecurDraft(d => ({ ...d, type: 'expense' }))}>
+                    <Text style={[s.tabT, recurDraft.type !== 'income' && s.tabTOn]}>정기 지출</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[s.tab, recurDraft.type === 'income' && s.tabOn]}
+                    onPress={() => setRecurDraft(d => ({ ...d, type: 'income' }))}>
+                    <Text style={[s.tabT, recurDraft.type === 'income' && { color: C.green }]}>정기 수입</Text>
+                  </TouchableOpacity>
+                </View>
+                <TextInput style={s.input}
+                  placeholder={recurDraft.type === 'income' ? '이름 (예: 월급, 용돈)' : '이름 (예: 넷플릭스, 월세)'}
+                  placeholderTextColor={C.faint}
                   value={recurDraft.merchant} onChangeText={v => setRecurDraft(d => ({ ...d, merchant: v }))} />
                 <TextInput style={s.input} placeholder="금액 (원)" placeholderTextColor={C.faint} keyboardType="number-pad"
                   value={recurDraft.amount} onChangeText={v => setRecurDraft(d => ({ ...d, amount: fmtInput(v) }))} />
 
-                <View style={s.catGrid}>
-                  {CATEGORIES.map(c => (
-                    <TouchableOpacity key={c.key} activeOpacity={0.7}
-                      style={[s.catBtn, recurDraft.category === c.key && s.catBtnOn]}
-                      onPress={() => setRecurDraft(d => ({ ...d, category: c.key }))}>
-                      <View style={[s.catBtnDot, { backgroundColor: c.color }]} />
-                      <Text style={[s.catBtnT, recurDraft.category === c.key && { color: C.text }]}>{c.label}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
+                {recurDraft.type !== 'income' && (
+                  <View style={s.catGrid}>
+                    {CATEGORIES.map(c => (
+                      <TouchableOpacity key={c.key} activeOpacity={0.7}
+                        style={[s.catBtn, recurDraft.category === c.key && s.catBtnOn]}
+                        onPress={() => setRecurDraft(d => ({ ...d, category: c.key }))}>
+                        <View style={[s.catBtnDot, { backgroundColor: c.color }]} />
+                        <Text style={[s.catBtnT, recurDraft.category === c.key && { color: C.text }]}>{c.label}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
 
                 <Text style={s.budLabel}>주기</Text>
                 <View style={s.tabs}>
@@ -2071,6 +2349,18 @@ const s = StyleSheet.create({
   itemAmt: { color: C.text, fontWeight: '700', fontSize: 15.5, letterSpacing: -0.3 },
   itemMemo: { color: C.gold, fontSize: 12.5, marginTop: 3, lineHeight: 17 },
   itemSplitHint: { color: C.faint, fontSize: 11.5, marginTop: 2 },
+  itemTags: { color: C.blueText, fontSize: 11.5, marginTop: 3, fontWeight: '600' },
+  itemNameRefunded: { textDecorationLine: 'line-through', color: C.sub },
+  itemAmtRefunded: { textDecorationLine: 'line-through', color: C.sub },
+  todayBox: { backgroundColor: C.card2, borderRadius: 14, padding: 14, marginTop: 12 },
+  todayLabel: { color: C.sub, fontSize: 12.5, fontWeight: '600' },
+  todayAmt: { fontSize: 24, fontWeight: '800', marginTop: 2, letterSpacing: -0.5 },
+  todaySub: { color: C.faint, fontSize: 11.5, marginTop: 3, lineHeight: 16 },
+  tagSuggest: { backgroundColor: C.card2, borderRadius: 99, paddingHorizontal: 11, paddingVertical: 6, marginRight: 7 },
+  tagSuggestT: { color: C.blueText, fontSize: 12, fontWeight: '700' },
+  backupBox: { backgroundColor: C.card2, borderRadius: 16, padding: 16, marginTop: 20 },
+  backupTitle: { color: C.text, fontSize: 14.5, fontWeight: '800' },
+  backupSub: { color: C.faint, fontSize: 12, lineHeight: 18, marginTop: 5 },
   splitBaseAmt: { color: C.text, fontSize: 20, fontWeight: '800', marginTop: 2, marginBottom: 4, letterSpacing: -0.4 },
 
   calCard: { backgroundColor: C.card, borderRadius: 20, padding: 14, paddingBottom: 10, marginBottom: 12 },

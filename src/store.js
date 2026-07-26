@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { guessCategory, parsePayment } from './parser';
 import { supabase, hasSupabase } from './supabase';
-import { occurrencesSince, sinceAnchor, findRecurringMatch } from './recurring';
+import { occurrencesSince, sinceAnchor, findRecurringMatch, merchantMatches } from './recurring';
 
 const KEY = 'payments_v1';
 const MERCHANT_CAT_KEY = 'merchant_categories_v1';
@@ -106,9 +106,28 @@ export async function getPayments() {
 export async function savePayment(record) {
   const list = await getPayments();
 
+  // 결제 취소/환불 알림: 원래 결제를 찾아 '환불됨'으로 표시해 합계에서 빼줌.
+  // 원 결제를 못 찾으면(앱 설치 전 결제 등) 환불 기록만 따로 남겨 사용자가 확인할 수 있게 함.
+  if (record.refund) {
+    const rTs = new Date(record.ts);
+    const origin = list.find(p => !p.deleted && !p.refunded && !p.isRefund
+      && p.amount === record.amount
+      && merchantMatches(p.merchant, record.merchant)
+      && rTs - new Date(p.ts) >= 0 && rTs - new Date(p.ts) < 90 * 86400000);
+    if (origin) {
+      origin.refunded = true;
+      origin.refundedAt = record.ts;
+      await AsyncStorage.setItem(KEY, JSON.stringify(list));
+      deleteFromSupabase(origin.id); // 환불된 건 공유 페이지에서도 빠지도록
+      return list;
+    }
+    record.isRefund = true; // 짝을 못 찾은 환불 — 목록에 별도 표시
+  }
+
   // 고정지출과 매칭되는 실제 이체/알림이면 자동생성 항목과 합치거나, 다음 자동생성을 건너뛰게 함
   // (예: 매주 일요일 헌금 자동등록 + 실제 이체 알림이 둘 다 잡혀서 이중지출 되는 것 방지)
-  if (record.app !== 'recurring' && !record.recurringId && record.type !== 'income' && record.type !== 'saving') {
+  if (record.app !== 'recurring' && !record.recurringId && !record.isRefund
+      && record.type !== 'income' && record.type !== 'saving') {
     const templates = await getRecurring();
     const matched = findRecurringMatch(record, templates.filter(t => t.active));
     if (matched) {
@@ -340,6 +359,7 @@ export async function runRecurringGenerator() {
         id: `r_${tpl.id}_${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`,
         ts, merchant: tpl.merchant, amount: tpl.amount, category: tpl.category,
         memo: tpl.memo || undefined, app: 'recurring', recurringId: tpl.id,
+        ...(tpl.type === 'income' ? { type: 'income' } : {}), // 정기 수입(월급 등)
       });
     }
     tpl.lastGenerated = `${occ[occ.length-1].getFullYear()}-${String(occ[occ.length-1].getMonth()+1).padStart(2,'0')}-${String(occ[occ.length-1].getDate()).padStart(2,'0')}`;
@@ -347,6 +367,66 @@ export async function runRecurringGenerator() {
   }
   if (changed) await saveRecurringList(list);
   return changed;
+}
+
+// ---------------- 태그 (카테고리와 별개로 자유롭게 묶기: #제주도여행 #회사경비) ----------------
+const TAGS_KEY = 'known_tags_v1';
+
+export async function getKnownTags() {
+  try {
+    const raw = await AsyncStorage.getItem(TAGS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+async function rememberTags(tags) {
+  if (!tags || !tags.length) return;
+  const known = await getKnownTags();
+  let changed = false;
+  for (const t of tags) if (!known.includes(t)) { known.unshift(t); changed = true; }
+  if (changed) await AsyncStorage.setItem(TAGS_KEY, JSON.stringify(known.slice(0, 50)));
+}
+
+// "#제주도 #회사경비" 또는 "제주도, 회사경비" → ['제주도','회사경비']
+export function parseTags(input) {
+  return String(input || '')
+    .split(/[\s,]+/)
+    .map(t => t.replace(/^#/, '').trim())
+    .filter(Boolean)
+    .slice(0, 10);
+}
+
+// 같은 가맹점의 과거 기록을 한 번에 같은 카테고리로 변경
+export async function recategorizeMerchant(merchant, category) {
+  const list = await getPayments();
+  let count = 0;
+  for (const p of list) {
+    if (p.deleted || p.type === 'income' || p.type === 'saving') continue;
+    if (p.merchant === merchant && p.category !== category) {
+      p.category = category; count++;
+      syncToSupabase(p);
+    }
+  }
+  if (count) await AsyncStorage.setItem(KEY, JSON.stringify(list));
+  return { list, count };
+}
+
+// 같은 가맹점의 과거 기록 중 카테고리가 다른 것 개수 (물어보기 전에 확인용)
+export async function countOtherCategory(merchant, category) {
+  const list = await getPayments();
+  return list.filter(p => !p.deleted && p.type !== 'income' && p.type !== 'saving'
+    && p.merchant === merchant && p.category !== category).length;
+}
+
+export async function setPaymentTags(id, tags) {
+  const list = await getPayments();
+  const rec = list.find(p => p.id === id);
+  if (!rec) return list;
+  rec.tags = tags && tags.length ? tags : undefined;
+  await AsyncStorage.setItem(KEY, JSON.stringify(list));
+  await rememberTags(tags);
+  syncToSupabase(rec);
+  return list;
 }
 
 // ---------------- 고액 지출 소명 (하루 10만원 이상) ----------------
@@ -362,6 +442,68 @@ export async function saveExplanation(dateKey, text) {
   map[dateKey] = text;
   await AsyncStorage.setItem(EXPLAIN_KEY, JSON.stringify(map));
   return map;
+}
+
+// ---------------- 백업 / 복구 ----------------
+// 결제 내역은 payments 테이블에 이미 동기화되지만, 일기·예산·고정지출·목표 등은
+// 폰에만 있어서 앱을 지우거나 폰을 바꾸면 사라짐. 이 값들을 서버(user_data)에 통째로 저장/복원.
+const BACKUP_KEYS = [
+  DIARY_KEY, BUDGET_KEY, QUIT_SET_KEY, QUIT_DATES_KEY,
+  MERCHANT_CAT_KEY, EXPLAIN_KEY, GOALS_KEY, RECUR_KEY, TAGS_KEY,
+];
+
+export async function backupNow() {
+  if (!hasSupabase) return { ok: false, reason: 'no-supabase' };
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return { ok: false, reason: 'no-user' };
+    const entries = await AsyncStorage.multiGet(BACKUP_KEYS);
+    const data = {};
+    entries.forEach(([k, v]) => { if (v != null) data[k] = v; });
+    const { error } = await supabase.from('user_data')
+      .upsert({ user_id: user.id, data, updated_at: new Date().toISOString() });
+    if (error) return { ok: false, reason: error.message };
+    await AsyncStorage.setItem('last_backup_at', new Date().toISOString());
+    return { ok: true };
+  } catch (e) { return { ok: false, reason: String(e && e.message || e) }; }
+}
+
+export async function getLastBackupAt() {
+  try { return await AsyncStorage.getItem('last_backup_at'); } catch { return null; }
+}
+
+export async function fetchBackupInfo() {
+  if (!hasSupabase) return null;
+  try {
+    const { data, error } = await supabase.from('user_data').select('updated_at').maybeSingle();
+    if (error || !data) return null;
+    return data.updated_at;
+  } catch { return null; }
+}
+
+export async function restoreFromBackup() {
+  if (!hasSupabase) return { ok: false, reason: 'no-supabase' };
+  try {
+    const { data, error } = await supabase.from('user_data').select('data').maybeSingle();
+    if (error || !data || !data.data) return { ok: false, reason: 'no-backup' };
+    const pairs = Object.entries(data.data).filter(([k, v]) => typeof v === 'string');
+    if (!pairs.length) return { ok: false, reason: 'empty' };
+    await AsyncStorage.multiSet(pairs);
+    return { ok: true, count: pairs.length };
+  } catch (e) { return { ok: false, reason: String(e && e.message || e) }; }
+}
+
+// 로그인 직후: 폰에 데이터가 없고 서버에 백업이 있으면 자동 복원 (새 폰/재설치 시나리오)
+export async function autoRestoreIfEmpty() {
+  try {
+    const diary = await AsyncStorage.getItem(DIARY_KEY);
+    const goals = await AsyncStorage.getItem(GOALS_KEY);
+    const recur = await AsyncStorage.getItem(RECUR_KEY);
+    const isEmpty = !diary && !goals && !recur;
+    if (!isEmpty) return false;
+    const res = await restoreFromBackup();
+    return !!res.ok;
+  } catch { return false; }
 }
 
 // ---------------- 응원 메시지 (웹페이지에서 작성 → 로그인한 나만 볼 수 있음) ----------------
@@ -395,6 +537,7 @@ export async function syncToSupabase(record) {
       memo: record.memo || null,
       original_amount: record.originalAmount ?? null,
       split_count: record.splitCount ?? null,
+      tags: record.tags && record.tags.length ? record.tags.join(',') : null,
       user_id: user.id,
     });
   } catch (e) { /* 오프라인이면 무시. 다음 앱 실행 시 syncAll로 재전송 */ }
