@@ -25,6 +25,10 @@ export function parsePayment(rawText) {
   let text = rawText.replace(/[\u2066-\u2069\u200b-\u200f\u202a-\u202e\ufeff\u00ad]/g, '')
     .replace(/\n/g, ' ').trim();
 
+  // 잔액은 결제 금액은 아니지만 통장 잔액 추적에 쓰이므로 지우기 전에 따로 뽑아둠
+  const balMatch = text.match(/잔액\s*:?\s*([\d,]+)\s*원?/);
+  const balance = balMatch ? parseInt(balMatch[1].replace(/,/g, ''), 10) : null;
+
   // 누적/잔액/한도 금액은 결제 금액이 아니므로 먼저 제거
   // (예: "네이버파이낸셜 승인 120원 누적1,093,380원" → 누적 부분 삭제)
   text = text.replace(/(누적|잔액|한도)\s*:?\s*[\d,]+\s*원?/g, ' ');
@@ -68,7 +72,11 @@ export function parsePayment(rawText) {
   // 남은 토큰 중 가장 뒤쪽(카드알림은 보통 가맹점이 마지막) 최대 3개를 가맹점명으로
   const merchant = tokens.slice(-3).join(' ').trim() || '알수없음';
 
-  return { merchant, amount, raw: text, ...(refund ? { refund: true } : {}) };
+  return {
+    merchant, amount, raw: text,
+    ...(refund ? { refund: true } : {}),
+    ...(balance != null ? { balance } : {}),
+  };
 }
 
 // ---------------------------------------------

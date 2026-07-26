@@ -16,6 +16,7 @@ import {
   getGoals, addGoal, updateGoal, deleteGoal,
   getKnownTags, parseTags, setPaymentTags, recategorizeMerchant, countOtherCategory,
   backupNow, restoreFromBackup, getLastBackupAt, fetchBackupInfo, autoRestoreIfEmpty,
+  getBalance, getCardTargets, saveCardTargets, setOwed, toggleOwedSettled,
 } from './src/store';
 import { cycleLabel, nextDueLabel, addDays as addDaysLocal } from './src/recurring';
 import { goalRange, goalPeriodLabel, goalKindLabel, daysLeftLabel } from './src/goals';
@@ -32,7 +33,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r27'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r28'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const LOCK_LIMIT = 100000;   // 하루 이만큼 넘게 쓰면 소명 요청
 const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
 // 건강 회복 타임라인 (일 기준)
@@ -225,6 +226,11 @@ function MainApp({ profile, onSignOut }) {
   const [filterTag, setFilterTag] = useState(null);
   const [lastBackup, setLastBackup] = useState(null);
   const [backupBusy, setBackupBusy] = useState(false);
+  const [balance, setBalance] = useState(null);
+  const [cardTargets, setCardTargets] = useState({});
+  const [cardTargetOpen, setCardTargetOpen] = useState(false);
+  const [cardDraft, setCardDraft] = useState({});
+  const [owedFrom, setOwedFrom] = useState('');
   const [adding, setAdding] = useState(false);
   const [addType, setAddType] = useState('expense'); // 'expense' | 'income'
   const [addName, setAddName] = useState('');
@@ -281,15 +287,15 @@ function MainApp({ profile, onSignOut }) {
 
   const load = useCallback(async () => {
     await runRecurringGenerator(); // 도래한 고정지출을 먼저 자동 기록
-    const [p, b, d, q, qd, ex, ch, rec, gl, tg, bk, st] = await Promise.all([
+    const [p, b, d, q, qd, ex, ch, rec, gl, tg, bk, bal, ct, st] = await Promise.all([
       getPayments(), getBudgets(), getDiary(), getQuitSettings(), getQuitDates(),
       getExplanations(), fetchCheers(), getRecurring(), getGoals(),
-      getKnownTags(), getLastBackupAt(),
+      getKnownTags(), getLastBackupAt(), getBalance(), getCardTargets(),
       RNAndroidNotificationListener.getPermissionStatus(),
     ]);
     setPayments(p); setBudgets(b); setDiary(d); setQuitSet(q); setQuitDates(qd);
     setExplanations(ex); setCheers(ch); setRecurList(rec); setGoals(gl);
-    setKnownTags(tg); setLastBackup(bk); setPerm(st);
+    setKnownTags(tg); setLastBackup(bk); setBalance(bal); setCardTargets(ct); setPerm(st);
   }, []);
 
   useEffect(() => {
@@ -466,6 +472,12 @@ function MainApp({ profile, onSignOut }) {
     return Object.entries(sums).sort((a, b) => b[1] - a[1]);
   }, [monthPays]);
 
+  // 받을 돈 (엔빵 정산) — 달과 무관하게 아직 못 받은 것 전체
+  const owedList = useMemo(() => payments
+    .filter(p => !p.deleted && p.owedAmount > 0 && !p.owedSettled)
+    .sort((a, b) => new Date(b.ts) - new Date(a.ts)), [payments]);
+  const owedTotal = owedList.reduce((s, p) => s + p.owedAmount, 0);
+
   // 연간 리포트: 올해 월별 지출 + 카테고리 합계 + 작년 대비
   const yearReport = useMemo(() => {
     const y = viewYM.getFullYear();
@@ -634,6 +646,7 @@ function MainApp({ profile, onSignOut }) {
     setSplitOpen(false);
     setSplitPeople(p.splitCount ? String(p.splitCount) : '');
     setSplitAmount(fmtInput(p.amount));
+    setOwedFrom(p.owedFrom || '');
     setPickTarget(p);
   }, []);
 
@@ -700,9 +713,19 @@ function MainApp({ profile, onSignOut }) {
   const saveSplit = useCallback(async () => {
     const amt = parseInt(splitAmount.replace(/[^\d]/g, ''), 10);
     if (!amt) return;
-    const next = await applySplit(pickTarget.id, amt, splitPeople ? Number(splitPeople) : null);
-    setPayments([...next]); setPickTarget(null); setSplitOpen(false);
-  }, [pickTarget, splitAmount, splitPeople]);
+    await applySplit(pickTarget.id, amt, splitPeople ? Number(splitPeople) : null);
+    // 내가 전액 결제하고 일부만 내 몫이면, 나머지는 '받을 돈'으로 기록
+    const owed = Math.max(0, splitBase - amt);
+    const next = await setOwed(pickTarget.id, { owedAmount: owed, owedFrom: owedFrom.trim() });
+    setPayments([...next]); setPickTarget(null); setSplitOpen(false); setOwedFrom('');
+  }, [pickTarget, splitAmount, splitPeople, splitBase, owedFrom]);
+
+  const settleOwed = useCallback(async (p) => {
+    Alert.alert('정산 완료로 표시할까요?', `${p.merchant} · ${won(p.owedAmount)}원${p.owedFrom ? ` (${p.owedFrom})` : ''}`, [
+      { text: '취소', style: 'cancel' },
+      { text: '받았어요', onPress: async () => setPayments([...await toggleOwedSettled(p.id)]) },
+    ]);
+  }, []);
 
   const resetSplit = useCallback(async () => {
     const next = await clearSplit(pickTarget.id);
@@ -1111,6 +1134,12 @@ function MainApp({ profile, onSignOut }) {
             </TouchableOpacity>
           </View>
           <Text style={s.total}>{won(total)}원</Text>
+          {balance && isThisMonth && (
+            <Text style={s.balanceLine}>
+              통장 잔액 <Text style={{ color: C.text, fontWeight: '800' }}>{won(balance.amount)}원</Text>
+              <Text style={{ color: C.faint }}>  ({new Date(balance.ts).getMonth()+1}/{new Date(balance.ts).getDate()} 기준)</Text>
+            </Text>
+          )}
           {(incomeTotal > 0 || savingTotal > 0) && (
             <View style={{ flexDirection: 'row', gap: 12 }}>
               {incomeTotal > 0 && <Text style={s.incomeLine}>수입 +{won(incomeTotal)}원</Text>}
@@ -1197,6 +1226,31 @@ function MainApp({ profile, onSignOut }) {
                 ? `📊 이번 주 ${CAT[insight.cat].label}가 평소보다 ${insight.pct}% 많아요 (${won(insight.cur)}원)`
                 : `👏 이번 주 ${CAT[insight.cat].label}를 평소보다 ${Math.abs(insight.pct)}% 아꼈어요`}
             </Text>
+          </View>
+        )}
+
+        {/* 받을 돈 (엔빵 정산) */}
+        {owedList.length > 0 && (
+          <View style={s.dayCard}>
+            <View style={s.dayHead}>
+              <Text style={s.dayHeadT}>💸 받을 돈 {owedList.length}건</Text>
+              <Text style={[s.dayHeadT, { color: C.gold, fontWeight: '800' }]}>{won(owedTotal)}원</Text>
+            </View>
+            {owedList.slice(0, 5).map(p => (
+              <TouchableOpacity key={p.id} style={s.item} activeOpacity={0.6} onPress={() => settleOwed(p)}>
+                <View style={[s.dot, { backgroundColor: C.gold + '26' }]}>
+                  <View style={[s.dotCore, { backgroundColor: C.gold }]} />
+                </View>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={s.itemName} numberOfLines={1}>{p.owedFrom || p.merchant}</Text>
+                  <Text style={s.itemSub}>
+                    {new Date(p.ts).getMonth()+1}/{new Date(p.ts).getDate()} · {p.merchant}
+                    {p.splitCount ? ` · ${p.splitCount}명` : ''} · 탭하면 정산 완료
+                  </Text>
+                </View>
+                <Text style={[s.itemAmt, { color: C.gold }]}>{won(p.owedAmount)}원</Text>
+              </TouchableOpacity>
+            ))}
           </View>
         )}
 
@@ -1394,17 +1448,46 @@ function MainApp({ profile, onSignOut }) {
               </View>
             )}
 
-            {/* 카드·출처별 지출 */}
+            {/* 카드·출처별 지출 + 실적 목표 */}
             {bySource.length > 0 && (
               <View style={s.statCard}>
-                <Text style={s.statTitle}>{viewYM.getMonth()+1}월 결제수단별</Text>
-                {bySource.map(([k, v]) => (
-                  <View key={k} style={s.recurRow}>
-                    <Text style={s.recurName}>{k}</Text>
-                    <Text style={s.recurAmt}>{won(v)}원 <Text style={{ color: C.faint, fontWeight: '600', fontSize: 12 }}>
-                      {total > 0 ? Math.round(v / total * 100) : 0}%</Text></Text>
-                  </View>
-                ))}
+                <View style={s.totalRow}>
+                  <Text style={s.statTitle}>{viewYM.getMonth()+1}월 결제수단별</Text>
+                  <TouchableOpacity onPress={() => {
+                    setCardDraft(Object.fromEntries(bySource.map(([k]) => [k, cardTargets[k] ? fmtInput(cardTargets[k]) : ''])));
+                    setCardTargetOpen(true);
+                  }} hitSlop={8}>
+                    <Text style={s.budgetLink}>실적 목표 ›</Text>
+                  </TouchableOpacity>
+                </View>
+                {bySource.map(([k, v]) => {
+                  const target = cardTargets[k];
+                  const pct = target ? Math.round(v / target * 100) : null;
+                  const done = pct != null && pct >= 100;
+                  return (
+                    <View key={k} style={{ paddingVertical: 7 }}>
+                      <View style={s.recurRow}>
+                        <Text style={s.recurName}>{k}</Text>
+                        <Text style={s.recurAmt}>{won(v)}원 <Text style={{ color: C.faint, fontWeight: '600', fontSize: 12 }}>
+                          {total > 0 ? Math.round(v / total * 100) : 0}%</Text></Text>
+                      </View>
+                      {target > 0 && (
+                        <>
+                          <View style={[s.budBarBg, { marginTop: 6 }]}>
+                            <View style={[s.budBarFill, { width: `${Math.min(100, pct)}%`, backgroundColor: done ? C.green : C.blueText }]} />
+                          </View>
+                          <Text style={s.budText}>
+                            실적 {won(target)}원 중 {pct}% ·{' '}
+                            <Text style={{ color: done ? C.green : C.blueText, fontWeight: '700' }}>
+                              {done ? '달성! 🎉' : `${won(target - v)}원 남음`}
+                            </Text>
+                          </Text>
+                        </>
+                      )}
+                    </View>
+                  );
+                })}
+                <Text style={s.statEmpty}>카드 혜택 조건(전월 실적)을 넣어두면 진행률을 보여줘요</Text>
               </View>
             )}
 
@@ -1911,6 +1994,17 @@ function MainApp({ profile, onSignOut }) {
                     <Text style={s.budLabel}>내가 낼 금액</Text>
                     <TextInput style={s.input} keyboardType="number-pad" placeholderTextColor={C.faint}
                       value={splitAmount} onChangeText={v => setSplitAmount(fmtInput(v))} />
+                    {(() => {
+                      const myAmt = parseInt(String(splitAmount).replace(/[^\d]/g, ''), 10) || 0;
+                      const owed = Math.max(0, splitBase - myAmt);
+                      return owed > 0 ? (
+                        <>
+                          <Text style={s.budLabel}>받을 돈 {won(owed)}원 · 누구한테?</Text>
+                          <TextInput style={s.input} placeholder="예: 민수, 지현 (선택)" placeholderTextColor={C.faint}
+                            value={owedFrom} onChangeText={setOwedFrom} />
+                        </>
+                      ) : null;
+                    })()}
                     <TouchableOpacity style={[s.bigBtn, { backgroundColor: C.gold }]} activeOpacity={0.85} onPress={saveSplit}>
                       <Text style={s.bigBtnT}>이 금액만 지출로 반영</Text>
                     </TouchableOpacity>
@@ -2098,6 +2192,38 @@ function MainApp({ profile, onSignOut }) {
               ))}
             </ScrollView>
             <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={saveBudgetDraft}>
+              <Text style={s.bigBtnT}>저장</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* 카드 실적 목표 모달 */}
+      <Modal visible={cardTargetOpen} transparent animationType="slide" onRequestClose={() => setCardTargetOpen(false)}>
+        <TouchableOpacity style={s.modalBg} activeOpacity={1} onPress={() => setCardTargetOpen(false)}>
+          <View style={s.modalCard} onStartShouldSetResponder={() => true}>
+            <View style={s.grabber} />
+            <Text style={s.modalTitle}>카드 실적 목표</Text>
+            <Text style={s.modalSub}>카드 혜택 조건(예: 전월 30만원 이상)을 넣어두면 이번 달 진행률을 보여줘요. 비워두면 표시 안 해요.</Text>
+            <ScrollView style={{ maxHeight: 360 }} keyboardShouldPersistTaps="handled">
+              {bySource.map(([k]) => (
+                <View key={k}>
+                  <Text style={s.budLabel}>{k}</Text>
+                  <TextInput style={s.input} placeholder="예: 300,000" placeholderTextColor={C.faint}
+                    keyboardType="number-pad" value={cardDraft[k] || ''}
+                    onChangeText={v => setCardDraft(d => ({ ...d, [k]: fmtInput(v) }))} />
+                </View>
+              ))}
+            </ScrollView>
+            <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={async () => {
+              const next = {};
+              Object.entries(cardDraft).forEach(([k, v]) => {
+                const n = parseInt(String(v).replace(/[^\d]/g, ''), 10);
+                if (n > 0) next[k] = n;
+              });
+              await saveCardTargets(next);
+              setCardTargets(next); setCardTargetOpen(false);
+            }}>
               <Text style={s.bigBtnT}>저장</Text>
             </TouchableOpacity>
           </View>
@@ -2302,6 +2428,7 @@ const s = StyleSheet.create({
   budgetLink: { color: C.faint, fontSize: 13, fontWeight: '600' },
   total: { color: C.text, fontSize: 34, fontWeight: '800', marginTop: 2, letterSpacing: -1 },
   incomeLine: { color: C.green, fontSize: 13, fontWeight: '700', marginTop: 3 },
+  balanceLine: { color: C.sub, fontSize: 13, marginTop: 6 },
   deltaPill: { alignSelf: 'flex-start', backgroundColor: C.card2, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 5, marginTop: 10 },
   deltaT: { fontSize: 13, fontWeight: '700' },
   projLine: { color: C.faint, fontSize: 12.5, marginTop: 8 },

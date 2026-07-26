@@ -106,6 +106,12 @@ export async function getPayments() {
 export async function savePayment(record) {
   const list = await getPayments();
 
+  // 문자에 잔액이 찍혀 왔으면 통장 잔액으로 기록 (결제 저장 여부와 무관하게)
+  if (record.balance != null) {
+    await recordBalance(record.balance, record.ts, record.app);
+    delete record.balance;
+  }
+
   // 결제 취소/환불 알림: 원래 결제를 찾아 '환불됨'으로 표시해 합계에서 빼줌.
   // 원 결제를 못 찾으면(앱 설치 전 결제 등) 환불 기록만 따로 남겨 사용자가 확인할 수 있게 함.
   if (record.refund) {
@@ -369,6 +375,63 @@ export async function runRecurringGenerator() {
   return changed;
 }
 
+// ---------------- 통장 잔액 (결제 문자에 찍혀 오는 "잔액 000원"을 기록) ----------------
+const BALANCE_KEY = 'balance_v1';
+
+export async function getBalance() {
+  try {
+    const raw = await AsyncStorage.getItem(BALANCE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+async function recordBalance(amount, ts, source) {
+  if (amount == null) return;
+  const cur = await getBalance();
+  // 더 최신 문자일 때만 갱신 (과거 문자가 늦게 처리돼도 잔액이 되돌아가지 않게)
+  if (cur && new Date(cur.ts) > new Date(ts)) return;
+  await AsyncStorage.setItem(BALANCE_KEY, JSON.stringify({ amount, ts, source: source || null }));
+}
+
+// ---------------- 카드(결제수단)별 실적 목표 ----------------
+const CARD_TARGET_KEY = 'card_targets_v1';
+
+export async function getCardTargets() {
+  try {
+    const raw = await AsyncStorage.getItem(CARD_TARGET_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+}
+export async function saveCardTargets(map) {
+  await AsyncStorage.setItem(CARD_TARGET_KEY, JSON.stringify(map));
+}
+
+// ---------------- 받을 돈 (엔빵 정산) ----------------
+// 엔빵한 결제에 owedAmount/owedFrom을 달아두고, 받으면 owedSettled 처리
+export async function setOwed(id, { owedAmount, owedFrom }) {
+  const list = await getPayments();
+  const rec = list.find(p => p.id === id);
+  if (!rec) return list;
+  if (owedAmount > 0) {
+    rec.owedAmount = owedAmount;
+    rec.owedFrom = owedFrom || null;
+    rec.owedSettled = false;
+  } else {
+    delete rec.owedAmount; delete rec.owedFrom; delete rec.owedSettled;
+  }
+  await AsyncStorage.setItem(KEY, JSON.stringify(list));
+  return list;
+}
+
+export async function toggleOwedSettled(id) {
+  const list = await getPayments();
+  const rec = list.find(p => p.id === id);
+  if (!rec || rec.owedAmount == null) return list;
+  rec.owedSettled = !rec.owedSettled;
+  await AsyncStorage.setItem(KEY, JSON.stringify(list));
+  return list;
+}
+
 // ---------------- 태그 (카테고리와 별개로 자유롭게 묶기: #제주도여행 #회사경비) ----------------
 const TAGS_KEY = 'known_tags_v1';
 
@@ -450,6 +513,7 @@ export async function saveExplanation(dateKey, text) {
 const BACKUP_KEYS = [
   DIARY_KEY, BUDGET_KEY, QUIT_SET_KEY, QUIT_DATES_KEY,
   MERCHANT_CAT_KEY, EXPLAIN_KEY, GOALS_KEY, RECUR_KEY, TAGS_KEY,
+  CARD_TARGET_KEY, BALANCE_KEY,
 ];
 
 export async function backupNow() {
