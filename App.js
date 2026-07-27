@@ -19,7 +19,7 @@ import {
   getBalance, getCardTargets, saveCardTargets, setOwed, toggleOwedSettled,
 } from './src/store';
 import { cycleLabel, nextDueLabel, addDays as addDaysLocal } from './src/recurring';
-import { goalRange, goalPeriodLabel, goalKindLabel, daysLeftLabel } from './src/goals';
+import { goalRange, goalPeriodLabel, goalKindLabel, daysLeftLabel, weekRange as weekRangeLocal } from './src/goals';
 import { parsePayment } from './src/parser';
 import { QUIT_GOALS, CATEGORIES, SHOP_ITEMS, SUPABASE_URL } from './src/config';
 import { hasSupabase } from './src/supabase';
@@ -33,7 +33,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r28'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r29'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const LOCK_LIMIT = 100000;   // 하루 이만큼 넘게 쓰면 소명 요청
 const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
 // 건강 회복 타임라인 (일 기준)
@@ -471,6 +471,40 @@ function MainApp({ profile, onSignOut }) {
     monthPays.forEach(p => { const k = srcName(p.app); sums[k] = (sums[k] || 0) + p.amount; });
     return Object.entries(sums).sort((a, b) => b[1] - a[1]);
   }, [monthPays]);
+
+  // 주간 리포트: 이번 주(월~일) vs 지난주, 요일별 지출, 최다 카테고리
+  const weekReport = useMemo(() => {
+    const todayMid = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const { start: wStart } = weekRangeLocal(todayMid);
+    const prevStart = addDaysLocal(wStart, -7);
+    const sumRange = (from, toExclusive) => payments.filter(p => {
+      if (p.deleted || p.refunded || p.isRefund || isIncome(p) || isSaving(p)) return false;
+      const d = new Date(p.ts);
+      return d >= from && d < toExclusive;
+    });
+    const thisWeek = sumRange(wStart, addDaysLocal(wStart, 7));
+    const lastWeek = sumRange(prevStart, wStart);
+    const tSum = thisWeek.reduce((s, p) => s + p.amount, 0);
+    const lSum = lastWeek.reduce((s, p) => s + p.amount, 0);
+    // 요일별(월~일)
+    const byDay = Array.from({ length: 7 }, () => 0);
+    thisWeek.forEach(p => {
+      const d = new Date(p.ts);
+      const idx = Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()) - wStart) / 86400000);
+      if (idx >= 0 && idx < 7) byDay[idx] += p.amount;
+    });
+    // 카테고리 1위
+    const cats = {};
+    thisWeek.forEach(p => { const k = CAT[p.category] ? p.category : 'etc'; cats[k] = (cats[k] || 0) + p.amount; });
+    const topCat = Object.entries(cats).sort((a, b) => b[1] - a[1])[0] || null;
+    const noSpendDays = byDay.filter((v, i) => v === 0 && addDaysLocal(wStart, i) <= todayMid).length;
+    return {
+      start: wStart, tSum, lSum, byDay, topCat, noSpendDays,
+      count: thisWeek.length,
+      max: Math.max(...byDay, 1),
+      diff: lSum > 0 ? tSum - lSum : null,
+    };
+  }, [payments]);
 
   // 받을 돈 (엔빵 정산) — 달과 무관하게 아직 못 받은 것 전체
   const owedList = useMemo(() => payments
@@ -1431,6 +1465,62 @@ function MainApp({ profile, onSignOut }) {
         {/* ── 통계 뷰 ── */}
         {view === 'stat' && (
           <>
+            {/* 주간 리포트 */}
+            <View style={s.statCard}>
+              <Text style={s.statTitle}>
+                이번 주 리포트 📊 ({weekReport.start.getMonth()+1}/{weekReport.start.getDate()}~{addDaysLocal(weekReport.start,6).getMonth()+1}/{addDaysLocal(weekReport.start,6).getDate()})
+              </Text>
+              <Text style={[s.total, { fontSize: 28 }]}>{won(weekReport.tSum)}원</Text>
+              {weekReport.diff !== null ? (
+                <View style={s.deltaPill}>
+                  <Text style={[s.deltaT, { color: weekReport.diff <= 0 ? C.blueText : C.red }]}>
+                    지난주보다 {won(Math.abs(weekReport.diff))}원 {weekReport.diff <= 0 ? '덜 썼어요' : '더 썼어요'}
+                  </Text>
+                </View>
+              ) : (
+                <Text style={s.projLine}>지난주 기록이 쌓이면 비교해서 보여드려요</Text>
+              )}
+              <View style={[s.trendRow, { marginTop: 16, height: 110 }]}>
+                {weekReport.byDay.map((v, i) => {
+                  const d = addDaysLocal(weekReport.start, i);
+                  const isToday = d.getTime() === new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+                  return (
+                    <View key={i} style={s.trendCol}>
+                      <Text style={s.trendAmt}>{v ? fmtShort(v) : ''}</Text>
+                      <View style={[s.trendBar, {
+                        width: 20,
+                        height: Math.max(3, v / weekReport.max * 68),
+                        backgroundColor: isToday ? C.blue : v ? C.card2 : '#1E1E24',
+                      }]} />
+                      <Text style={[s.trendLabel, isToday && { color: C.text, fontWeight: '700' }]}>
+                        {['월','화','수','목','금','토','일'][i]}
+                      </Text>
+                    </View>
+                  );
+                })}
+              </View>
+              <View style={{ marginTop: 12, gap: 7 }}>
+                <View style={s.recurRow}>
+                  <Text style={s.recurName}>결제 건수</Text>
+                  <Text style={s.recurAmt}>{weekReport.count}건</Text>
+                </View>
+                {weekReport.topCat && (
+                  <View style={s.recurRow}>
+                    <Text style={s.recurName}>가장 많이 쓴 곳</Text>
+                    <Text style={[s.recurAmt, { color: CAT[weekReport.topCat[0]].color }]}>
+                      {CAT[weekReport.topCat[0]].label} {won(weekReport.topCat[1])}원
+                    </Text>
+                  </View>
+                )}
+                <View style={s.recurRow}>
+                  <Text style={s.recurName}>무지출</Text>
+                  <Text style={[s.recurAmt, { color: weekReport.noSpendDays > 0 ? C.green : C.sub }]}>
+                    {weekReport.noSpendDays}일
+                  </Text>
+                </View>
+              </View>
+            </View>
+
             {/* 소비 습관 */}
             {habits.length > 0 && (
               <View style={s.statCard}>
