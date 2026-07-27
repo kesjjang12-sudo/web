@@ -16,7 +16,7 @@ import {
   getGoals, addGoal, updateGoal, deleteGoal,
   getKnownTags, parseTags, setPaymentTags, recategorizeMerchant, countOtherCategory,
   backupNow, restoreFromBackup, getLastBackupAt, fetchBackupInfo, autoRestoreIfEmpty,
-  pullFromSupabase, hasLocalData,
+  pullFromSupabase, hasLocalData, findDuplicates, removeDuplicates,
   getBalance, getCardTargets, saveCardTargets, setOwed, toggleOwedSettled,
 } from './src/store';
 import { cycleLabel, nextDueLabel, addDays as addDaysLocal } from './src/recurring';
@@ -37,7 +37,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r31'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r32'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const LOCK_LIMIT = 100000;   // 하루 이만큼 넘게 쓰면 소명 요청
 const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
 // 건강 회복 타임라인 (일 기준)
@@ -235,6 +235,7 @@ function MainApp({ profile, onSignOut }) {
   const [filterTag, setFilterTag] = useState(null);
   const [lastBackup, setLastBackup] = useState(null);
   const [backupBusy, setBackupBusy] = useState(false);
+  const [dupPairs, setDupPairs] = useState([]);
   const [balance, setBalance] = useState(null);
   const [cardTargets, setCardTargets] = useState({});
   const [cardTargetOpen, setCardTargetOpen] = useState(false);
@@ -305,6 +306,8 @@ function MainApp({ profile, onSignOut }) {
     setPayments(p); setBudgets(b); setDiary(d); setQuitSet(q); setQuitDates(qd);
     setExplanations(ex); setCheers(ch); setRecurList(rec); setGoals(gl);
     setKnownTags(tg); setLastBackup(bk); setBalance(bal); setCardTargets(ct); setPerm(st);
+
+    setDupPairs(await findDuplicates()); // 이미 쌓인 중복 감지
 
     // 홈 화면 위젯도 최신 값으로 갱신 (위젯을 안 올려놨으면 조용히 무시됨)
     try {
@@ -728,6 +731,21 @@ function MainApp({ profile, onSignOut }) {
       }
     }
   }, [pickTarget, editCat, editMemo, editTags]);
+
+  const cleanDuplicates = useCallback(() => {
+    const preview = dupPairs.slice(0, 4)
+      .map(p => `· ${p.remove.merchant} ${won(p.remove.amount)}원`).join('\n');
+    Alert.alert('중복 결제 정리',
+      `같은 결제가 두 번 기록된 것 ${dupPairs.length}건을 찾았어요.\n\n${preview}` +
+      `${dupPairs.length > 4 ? `\n외 ${dupPairs.length - 4}건` : ''}\n\n삭제된 항목으로 옮길까요? (복원 가능)`, [
+      { text: '취소', style: 'cancel' },
+      { text: `${dupPairs.length}건 정리`, onPress: async () => {
+        const res = await removeDuplicates(dupPairs);
+        setPayments([...res.list]); setDupPairs(await findDuplicates());
+        Alert.alert('정리 완료', `${res.count}건을 삭제된 항목으로 옮겼어요.`);
+      } },
+    ]);
+  }, [dupPairs]);
 
   // ── 백업 / 복구 ──
   const doBackup = useCallback(async () => {
@@ -1293,6 +1311,15 @@ function MainApp({ profile, onSignOut }) {
                 : `👏 이번 주 ${CAT[insight.cat].label}를 평소보다 ${Math.abs(insight.pct)}% 아꼈어요`}
             </Text>
           </View>
+        )}
+
+        {/* 중복 결제 알림 */}
+        {dupPairs.length > 0 && (
+          <TouchableOpacity style={[s.insightCard, { borderLeftColor: C.gold }]} activeOpacity={0.8} onPress={cleanDuplicates}>
+            <Text style={s.insightT}>
+              🔁 같은 결제가 두 번 기록된 것 {dupPairs.length}건이 있어요 · 탭해서 정리
+            </Text>
+          </TouchableOpacity>
         )}
 
         {/* 받을 돈 (엔빵 정산) */}

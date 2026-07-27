@@ -5,6 +5,22 @@ import { occurrencesSince, sinceAnchor, findRecurringMatch, merchantMatches } fr
 
 const KEY = 'payments_v1';
 const MERCHANT_CAT_KEY = 'merchant_categories_v1';
+
+// 같은 결제로 볼 시간 범위 (카드앱 푸시와 문자가 몇 십 초 차이로 도착)
+const DUP_WINDOW_MS = 3 * 60 * 1000;
+
+// 알림 출처를 큰 갈래로 나눔: 문자 / 은행앱·카드앱 / 직접입력 등
+function sourceKind(app) {
+  if (!app || app === 'manual' || app === 'recurring' || app === 'restored' || app === 'test') return 'manual';
+  if (/messaging/.test(app)) return 'sms';
+  return 'app';
+}
+// 문자 ↔ 카드앱처럼 서로 다른 경로로 들어온 알림인지 (둘 다 자동 감지된 것일 때만)
+function isDifferentSource(a, b) {
+  const ka = sourceKind(a), kb = sourceKind(b);
+  if (ka === 'manual' || kb === 'manual') return false;
+  return ka !== kb;
+}
 const BUDGET_KEY = 'budgets_v1';
 const DIARY_KEY = 'diary_v1';
 const QUIT_SET_KEY = 'quit_settings_v1';
@@ -160,10 +176,27 @@ export async function savePayment(record) {
     }
   }
 
-  // 같은 알림 중복 방지 (10초 내 동일 금액+가맹점)
-  const dup = list.find(p => p.merchant === record.merchant && p.amount === record.amount
-    && Math.abs(new Date(p.ts) - new Date(record.ts)) < 10000);
-  if (dup) return list;
+  // 같은 결제가 여러 알림으로 중복 저장되는 것 방지.
+  // 카드앱 푸시와 문자가 같이 오면 가맹점 표기가 다르고(예: "이마트24" vs "이마트24군포복합")
+  // 도착 시간도 몇 십 초씩 벌어지므로, 금액+시간 근접을 기본으로 보고
+  // (가맹점 유사) 또는 (알림 출처가 서로 다름)이면 같은 결제로 판단한다.
+  const dup = list.find(p => {
+    if (p.deleted || p.amount !== record.amount) return false;
+    const gap = Math.abs(new Date(p.ts) - new Date(record.ts));
+    if (gap > DUP_WINDOW_MS) return false;
+    if (merchantMatches(p.merchant, record.merchant)) return true;
+    return isDifferentSource(p.app, record.app); // 문자 ↔ 카드앱처럼 출처가 다르면 같은 건으로 봄
+  });
+  if (dup) {
+    // 더 정보가 많은 가맹점명으로 보정 (예: '알수없음' → 실제 상호)
+    if ((dup.merchant === '알수없음' || dup.merchant.length < record.merchant.length)
+        && record.merchant !== '알수없음') {
+      dup.merchant = record.merchant;
+      await AsyncStorage.setItem(KEY, JSON.stringify(list));
+      syncToSupabase(dup);
+    }
+    return list;
+  }
   if (!record.category) {
     const memory = await getMerchantMap();
     record.category = guessCategory(record.merchant, memory);
@@ -457,6 +490,45 @@ export function parseTags(input) {
     .map(t => t.replace(/^#/, '').trim())
     .filter(Boolean)
     .slice(0, 10);
+}
+
+// 이미 쌓여 있는 중복 결제 찾기 (같은 금액 + 3분 이내 + 가맹점 유사하거나 출처가 다름)
+export async function findDuplicates() {
+  const list = await getPayments();
+  const live = list.filter(p => !p.deleted && p.type !== 'income' && p.type !== 'saving')
+    .sort((a, b) => new Date(a.ts) - new Date(b.ts));
+  const pairs = [];
+  const taken = new Set();
+  for (let i = 0; i < live.length; i++) {
+    if (taken.has(live[i].id)) continue;
+    for (let j = i + 1; j < live.length; j++) {
+      const a = live[i], b = live[j];
+      const gap = new Date(b.ts) - new Date(a.ts);
+      if (gap > DUP_WINDOW_MS) break; // 시간순 정렬이라 더 볼 필요 없음
+      if (taken.has(b.id) || a.amount !== b.amount) continue;
+      if (merchantMatches(a.merchant, b.merchant) || isDifferentSource(a.app, b.app)) {
+        // 정보가 더 적은 쪽을 지울 후보로 (가맹점명이 짧거나 '알수없음')
+        const worse = (b.merchant === '알수없음' || b.merchant.length < a.merchant.length) ? b : a;
+        const keep = worse === b ? a : b;
+        pairs.push({ keep, remove: worse });
+        taken.add(a.id); taken.add(b.id);
+        break;
+      }
+    }
+  }
+  return pairs;
+}
+
+// 찾은 중복을 삭제 처리 (휴지통으로 이동 — 복원 가능)
+export async function removeDuplicates(pairs) {
+  const list = await getPayments();
+  let n = 0;
+  for (const { remove } of pairs) {
+    const rec = list.find(p => p.id === remove.id);
+    if (rec && !rec.deleted) { rec.deleted = true; n++; deleteFromSupabase(rec.id); }
+  }
+  if (n) await AsyncStorage.setItem(KEY, JSON.stringify(list));
+  return { list, count: n };
 }
 
 // 같은 가맹점의 과거 기록을 한 번에 같은 카테고리로 변경
