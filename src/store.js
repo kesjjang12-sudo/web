@@ -516,14 +516,46 @@ const BACKUP_KEYS = [
   CARD_TARGET_KEY, BALANCE_KEY,
 ];
 
-export async function backupNow() {
+// 폰에 실제 데이터가 있는지 (재설치 직후 빈 상태를 구분하기 위함)
+export async function hasLocalData() {
+  try {
+    const vals = await AsyncStorage.multiGet([DIARY_KEY, GOALS_KEY, RECUR_KEY, BUDGET_KEY, KEY]);
+    return vals.some(([k, v]) => {
+      if (!v) return false;
+      try {
+        const parsed = JSON.parse(v);
+        if (Array.isArray(parsed)) return parsed.length > 0;
+        if (k === BUDGET_KEY) return !!(parsed && (parsed.total || Object.keys(parsed.cats || {}).length));
+        return !!parsed;
+      } catch { return false; }
+    });
+  } catch { return false; }
+}
+
+// force=true면 사용자가 직접 누른 백업이므로 빈 데이터라도 올림
+export async function backupNow(force = false) {
   if (!hasSupabase) return { ok: false, reason: 'no-supabase' };
   try {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return { ok: false, reason: 'no-user' };
+
     const entries = await AsyncStorage.multiGet(BACKUP_KEYS);
     const data = {};
     entries.forEach(([k, v]) => { if (v != null) data[k] = v; });
+
+    // 안전장치: 폰이 비어 있는데 서버에 백업이 있으면 덮어쓰지 않는다.
+    // (앱 재설치 직후 자동 백업이 좋은 백업을 빈 값으로 날려버리는 사고 방지)
+    if (!force) {
+      const local = await hasLocalData();
+      if (!local) {
+        const { data: existing } = await supabase.from('user_data').select('data').maybeSingle();
+        const serverKeys = existing && existing.data ? Object.keys(existing.data).length : 0;
+        if (serverKeys > Object.keys(data).length) {
+          return { ok: false, reason: 'skipped-empty' };
+        }
+      }
+    }
+
     const { error } = await supabase.from('user_data')
       .upsert({ user_id: user.id, data, updated_at: new Date().toISOString() });
     if (error) return { ok: false, reason: error.message };
@@ -539,18 +571,28 @@ export async function getLastBackupAt() {
 export async function fetchBackupInfo() {
   if (!hasSupabase) return null;
   try {
-    const { data, error } = await supabase.from('user_data').select('updated_at').maybeSingle();
+    const { data, error } = await supabase.from('user_data')
+      .select('updated_at, data, prev_updated_at, prev_data').maybeSingle();
     if (error || !data) return null;
-    return data.updated_at;
+    const keys = data.data ? Object.keys(data.data).length : 0;
+    const prevKeys = data.prev_data ? Object.keys(data.prev_data).length : 0;
+    return { updatedAt: data.updated_at, keys, prevUpdatedAt: data.prev_updated_at, prevKeys };
   } catch { return null; }
 }
 
 export async function restoreFromBackup() {
   if (!hasSupabase) return { ok: false, reason: 'no-supabase' };
   try {
-    const { data, error } = await supabase.from('user_data').select('data').maybeSingle();
-    if (error || !data || !data.data) return { ok: false, reason: 'no-backup' };
-    const pairs = Object.entries(data.data).filter(([k, v]) => typeof v === 'string');
+    const { data, error } = await supabase.from('user_data')
+      .select('data, prev_data').maybeSingle();
+    if (error || !data) return { ok: false, reason: 'no-backup' };
+
+    // 최신 백업이 이전 세대보다 빈약하면(덮어쓰기 사고) 알맹이가 있는 쪽을 복구
+    const cur = data.data || {};
+    const prev = data.prev_data || {};
+    const chosen = Object.keys(prev).length > Object.keys(cur).length ? prev : cur;
+
+    const pairs = Object.entries(chosen).filter(([, v]) => typeof v === 'string');
     if (!pairs.length) return { ok: false, reason: 'empty' };
     await AsyncStorage.multiSet(pairs);
     return { ok: true, count: pairs.length };
@@ -618,4 +660,37 @@ export async function syncAll() {
   for (const r of list.filter(p => !p.deleted).slice(0, 100)) await syncToSupabase(r);
   // 예전 버그로 서버에 남아있을 수 있는 삭제 항목 정리
   for (const r of list.filter(p => p.deleted).slice(0, 100)) await deleteFromSupabase(r.id);
+}
+
+// 서버에 있는 결제 내역을 폰으로 내려받아 합침 (앱 재설치/새 폰 복구용).
+// 폰에 없는 id만 추가하므로 로컬 수정(카테고리/메모 등)은 그대로 유지된다.
+export async function pullFromSupabase() {
+  if (!hasSupabase) return 0;
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return 0;
+    const { data, error } = await supabase
+      .from('payments').select('*').order('ts', { ascending: false }).limit(5000);
+    if (error || !data) return 0;
+
+    const list = await getPayments();
+    const have = new Set(list.map(p => p.id));
+    const added = [];
+    for (const r of data) {
+      if (have.has(r.id)) continue;
+      added.push({
+        id: r.id, ts: r.ts, merchant: r.merchant, amount: r.amount,
+        category: r.category || 'etc',
+        ...(r.memo ? { memo: r.memo } : {}),
+        ...(r.original_amount != null ? { originalAmount: r.original_amount } : {}),
+        ...(r.split_count != null ? { splitCount: r.split_count } : {}),
+        ...(r.tags ? { tags: String(r.tags).split(',').filter(Boolean) } : {}),
+        app: 'restored',
+      });
+    }
+    if (!added.length) return 0;
+    const merged = [...added, ...list].sort((a, b) => new Date(b.ts) - new Date(a.ts)).slice(0, 5000);
+    await AsyncStorage.setItem(KEY, JSON.stringify(merged));
+    return added.length;
+  } catch { return 0; }
 }

@@ -16,6 +16,7 @@ import {
   getGoals, addGoal, updateGoal, deleteGoal,
   getKnownTags, parseTags, setPaymentTags, recategorizeMerchant, countOtherCategory,
   backupNow, restoreFromBackup, getLastBackupAt, fetchBackupInfo, autoRestoreIfEmpty,
+  pullFromSupabase, hasLocalData,
   getBalance, getCardTargets, saveCardTargets, setOwed, toggleOwedSettled,
 } from './src/store';
 import { cycleLabel, nextDueLabel, addDays as addDaysLocal } from './src/recurring';
@@ -36,7 +37,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r30'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r31'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const LOCK_LIMIT = 100000;   // 하루 이만큼 넘게 쓰면 소명 요청
 const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
 // 건강 회복 타임라인 (일 기준)
@@ -103,6 +104,7 @@ export default function Root() {
   const [checking, setChecking] = useState(true);
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
+  const [restored, setRestored] = useState(0);
 
   useEffect(() => {
     if (!hasSupabase) { setChecking(false); return; }
@@ -110,7 +112,10 @@ export default function Root() {
     // 프로필/시작일 동기화는 실패해도 앱 진입을 막지 않음 (네트워크 문제로 영원히 로딩에 갇히는 것 방지)
     const afterLogin = async () => {
       try {
-        await autoRestoreIfEmpty(); // 새 폰/재설치면 서버 백업에서 자동 복원
+        // 재설치/새 폰: 서버에 있는 결제 내역과 설정을 먼저 되찾아온다
+        await autoRestoreIfEmpty();
+        await pullFromSupabase();
+        setRestored(v => v + 1); // 복구 후 화면 새로고침 트리거
         const p = await getMyProfile();
         setProfile(p);
         if (p && p.sober_start == null) {
@@ -154,7 +159,8 @@ export default function Root() {
     );
   }
   if (!session) return <AuthScreen />;
-  return <MainApp profile={profile} onSignOut={async () => { await signOut(); }} />;
+  // restored가 바뀌면 MainApp을 다시 마운트해 복구된 데이터를 즉시 반영
+  return <MainApp key={restored} profile={profile} onSignOut={async () => { await signOut(); }} />;
 }
 
 function AuthScreen() {
@@ -314,7 +320,9 @@ function MainApp({ profile, onSignOut }) {
     load();
     syncAll();
     // 폰에만 있는 데이터(일기/예산/목표 등)를 하루 한 번 자동 백업
+    // 단, 폰이 비어 있으면(재설치 직후) 절대 올리지 않는다 — 좋은 백업을 덮어쓰는 사고 방지
     (async () => {
+      if (!(await hasLocalData())) return;
       const last = await getLastBackupAt();
       if (!last || Date.now() - new Date(last).getTime() > 86400000) {
         const res = await backupNow();
@@ -724,23 +732,35 @@ function MainApp({ profile, onSignOut }) {
   // ── 백업 / 복구 ──
   const doBackup = useCallback(async () => {
     setBackupBusy(true);
-    const res = await backupNow();
+    const res = await backupNow(true); // 직접 누른 백업은 항상 실행
     setBackupBusy(false);
     if (res.ok) { setLastBackup(new Date().toISOString()); Alert.alert('백업 완료', '일기·예산·목표·고정지출이 안전하게 저장됐어요.'); }
     else Alert.alert('백업 실패', res.reason === 'no-user' ? '로그인이 필요해요.' : '잠시 후 다시 시도해주세요.');
   }, []);
 
   const doRestore = useCallback(async () => {
-    const at = await fetchBackupInfo();
-    if (!at) { Alert.alert('복구할 백업이 없어요', '먼저 백업을 한 번 해주세요.'); return; }
+    setBackupBusy(true);
+    const info = await fetchBackupInfo();
+    const pulled = await pullFromSupabase(); // 결제 내역도 함께 되찾기
+    setBackupBusy(false);
+    if (!info) {
+      if (pulled > 0) { await load(); Alert.alert('복구 완료', `결제 내역 ${pulled}건을 되찾았어요.`); }
+      else Alert.alert('복구할 백업이 없어요', '먼저 백업을 한 번 해주세요.');
+      return;
+    }
+    const usesPrev = info.prevKeys > info.keys;
+    const at = usesPrev ? info.prevUpdatedAt : info.updatedAt;
     Alert.alert('백업에서 복구할까요?',
-      `${new Date(at).toLocaleString('ko-KR')} 백업으로 되돌립니다.\n지금 폰에 있는 일기·예산·목표는 덮어써져요.`, [
+      `${at ? new Date(at).toLocaleString('ko-KR') : ''} 백업으로 되돌립니다.` +
+      (usesPrev ? '\n(더 온전한 이전 백업을 사용해요)' : '') +
+      `${pulled > 0 ? `\n결제 내역 ${pulled}건은 이미 되찾았어요.` : ''}`, [
       { text: '취소', style: 'cancel' },
-      { text: '복구', style: 'destructive', onPress: async () => {
+      { text: '복구', onPress: async () => {
         setBackupBusy(true);
         const res = await restoreFromBackup();
         setBackupBusy(false);
-        if (res.ok) { await load(); Alert.alert('복구 완료', '백업 시점의 데이터로 되돌렸어요.'); }
+        await load();
+        if (res.ok) Alert.alert('복구 완료', '백업 시점의 데이터로 되돌렸어요.');
         else Alert.alert('복구 실패', '백업을 불러오지 못했어요.');
       } },
     ]);
