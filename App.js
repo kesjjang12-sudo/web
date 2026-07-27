@@ -22,6 +22,9 @@ import { cycleLabel, nextDueLabel, addDays as addDaysLocal } from './src/recurri
 import { goalRange, goalPeriodLabel, goalKindLabel, daysLeftLabel, weekRange as weekRangeLocal } from './src/goals';
 import { parsePayment } from './src/parser';
 import { QUIT_GOALS, CATEGORIES, SHOP_ITEMS, SUPABASE_URL } from './src/config';
+import { requestWidgetUpdate } from 'react-native-android-widget';
+import { CleanpayWidget } from './src/widget/CleanpayWidget';
+import { buildSummary } from './src/summary';
 import { hasSupabase } from './src/supabase';
 import { getSession, onAuthChange, signUp, signIn, signOut, getMyProfile } from './src/auth';
 
@@ -33,7 +36,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r29'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r30'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const LOCK_LIMIT = 100000;   // 하루 이만큼 넘게 쓰면 소명 요청
 const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
 // 건강 회복 타임라인 (일 기준)
@@ -296,6 +299,15 @@ function MainApp({ profile, onSignOut }) {
     setPayments(p); setBudgets(b); setDiary(d); setQuitSet(q); setQuitDates(qd);
     setExplanations(ex); setCheers(ch); setRecurList(rec); setGoals(gl);
     setKnownTags(tg); setLastBackup(bk); setBalance(bal); setCardTargets(ct); setPerm(st);
+
+    // 홈 화면 위젯도 최신 값으로 갱신 (위젯을 안 올려놨으면 조용히 무시됨)
+    try {
+      const data = await buildSummary();
+      requestWidgetUpdate({
+        widgetName: 'Cleanpay',
+        renderWidget: () => <CleanpayWidget data={data} />,
+      });
+    } catch (e) { /* 위젯 갱신 실패는 앱 동작에 영향 없음 */ }
   }, []);
 
   useEffect(() => {
