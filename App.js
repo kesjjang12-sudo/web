@@ -20,7 +20,7 @@ import {
   getSeenApps, getWatchApps, toggleWatchApp,
   getBalance, getCardTargets, saveCardTargets, setOwed, toggleOwedSettled,
 } from './src/store';
-import { cycleLabel, nextDueLabel, addDays as addDaysLocal } from './src/recurring';
+import { cycleLabel, nextDueLabel, addDays as addDaysLocal, toDateOnly as toDateOnlyLocal } from './src/recurring';
 import { goalRange, goalPeriodLabel, goalKindLabel, daysLeftLabel, weekRange as weekRangeLocal } from './src/goals';
 import { parsePayment } from './src/parser';
 import { QUIT_GOALS, CATEGORIES, SHOP_ITEMS, SUPABASE_URL, BANK_PACKAGES } from './src/config';
@@ -38,7 +38,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r33'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r34'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const LOCK_LIMIT = 100000;   // 하루 이만큼 넘게 쓰면 소명 요청
 const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
 // 건강 회복 타임라인 (일 기준)
@@ -1193,7 +1193,9 @@ function MainApp({ profile, onSignOut }) {
             const color = i === 0 ? C.green : C.blueText;
             const [, sm, sd] = start.split('-').map(Number);
             return (
-              <TouchableOpacity key={g.key} style={s.dday} activeOpacity={0.7} onPress={() => setScreen('save')}>
+              <TouchableOpacity key={g.key} style={s.dday} activeOpacity={0.7}
+                onPress={() => setScreen('save')}
+                onLongPress={openDateEdit} delayLongPress={450}>
                 <Text style={s.ddayTag}>{g.label}</Text>
                 <Text style={[s.ddayNum, { color }]}>{days}일째</Text>
                 <Text style={s.ddaySince}>{sm}월 {sd}일부터</Text>
@@ -1800,23 +1802,9 @@ function MainApp({ profile, onSignOut }) {
         {nextMs && (
           <Text style={s.savedTeaser}>다음 목표 🎯 {nextMs}일까지 <Text style={{ color: C.blueText, fontWeight: '800' }}>D-{nextMs - Math.min(soberDaysNow, smokeDaysNow)}</Text></Text>
         )}
-        <TouchableOpacity activeOpacity={0.7} onPress={openDateEdit} style={{ alignSelf: 'center', marginBottom: 12 }}>
-          <Text style={s.budgetLink}>시작일 바꾸기 ›</Text>
+        <TouchableOpacity style={s.dateEditBtn} activeOpacity={0.8} onPress={openDateEdit}>
+          <Text style={s.dateEditBtnT}>📅 금주 · 금연 시작일 설정</Text>
         </TouchableOpacity>
-        {dateEdit && (
-          <View style={[s.statCard, { paddingTop: 16 }]}>
-            <Text style={s.budLabel}>금주 시작일 (YYYY-MM-DD)</Text>
-            <TextInput style={s.input} placeholder="2026-07-13" placeholderTextColor={C.faint}
-              value={dateDraft.sober} onChangeText={v => setDateDraft(d => ({ ...d, sober: v }))} />
-            <Text style={s.budLabel}>금연 시작일 (YYYY-MM-DD)</Text>
-            <TextInput style={s.input} placeholder="2026-07-13" placeholderTextColor={C.faint}
-              value={dateDraft.smoke} onChangeText={v => setDateDraft(d => ({ ...d, smoke: v }))} />
-            {!!dateErr && <Text style={s.authErr}>{dateErr}</Text>}
-            <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={saveDateEdit}>
-              <Text style={s.bigBtnT}>저장</Text>
-            </TouchableOpacity>
-          </View>
-        )}
 
         {/* 위기 버튼 */}
         <TouchableOpacity style={s.crisisBtn} activeOpacity={0.85} onPress={openCrisis}>
@@ -2361,6 +2349,55 @@ function MainApp({ profile, onSignOut }) {
         </TouchableOpacity>
       </Modal>
 
+      {/* 금주·금연 시작일 설정 모달 */}
+      <Modal visible={dateEdit} transparent animationType="slide" onRequestClose={() => setDateEdit(false)}>
+        <TouchableOpacity style={s.modalBg} activeOpacity={1} onPress={() => setDateEdit(false)}>
+          <View style={s.modalCard} onStartShouldSetResponder={() => true}>
+            <View style={s.grabber} />
+            <Text style={s.modalTitle}>금주 · 금연 시작일</Text>
+            <Text style={s.modalSub}>언제부터 시작했는지 정하면 D-day와 아낀 돈이 다시 계산돼요.</Text>
+            <ScrollView style={{ maxHeight: 420 }} keyboardShouldPersistTaps="handled">
+              {[['sober', '금주', C.green], ['smoke', '금연', C.blueText]].map(([key, label, color]) => (
+                <View key={key} style={{ marginBottom: 18 }}>
+                  <View style={s.totalRow}>
+                    <Text style={[s.budLabel, { marginTop: 0 }]}>{label} 시작일</Text>
+                    <Text style={{ color, fontWeight: '800', fontSize: 13 }}>
+                      {/^\d{4}-\d{2}-\d{2}$/.test(dateDraft[key]) ? `${daysSince(dateDraft[key])}일째` : ''}
+                    </Text>
+                  </View>
+                  <TextInput style={s.input} placeholder="2026-07-13" placeholderTextColor={C.faint}
+                    value={dateDraft[key]} onChangeText={v => setDateDraft(d => ({ ...d, [key]: v }))} />
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: 8 }}>
+                    {[['오늘', 0], ['어제', 1], ['3일 전', 3], ['1주 전', 7], ['1달 전', 30]].map(([lbl, back]) => (
+                      <TouchableOpacity key={lbl} style={s.quickDate}
+                        onPress={() => setDateDraft(d => ({ ...d, [key]: dkey(addDaysLocal(new Date(), -back)) }))}>
+                        <Text style={s.quickDateT}>{lbl}</Text>
+                      </TouchableOpacity>
+                    ))}
+                    <TouchableOpacity style={s.quickDate}
+                      onPress={() => setDateDraft(d => ({
+                        ...d, [key]: /^\d{4}-\d{2}-\d{2}$/.test(d[key]) ? dkey(addDaysLocal(toDateOnlyLocal(d[key]), -1)) : d[key],
+                      }))}>
+                      <Text style={s.quickDateT}>◀ 하루</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={s.quickDate}
+                      onPress={() => setDateDraft(d => ({
+                        ...d, [key]: /^\d{4}-\d{2}-\d{2}$/.test(d[key]) ? dkey(addDaysLocal(toDateOnlyLocal(d[key]), 1)) : d[key],
+                      }))}>
+                      <Text style={s.quickDateT}>하루 ▶</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ))}
+              {!!dateErr && <Text style={s.authErr}>{dateErr}</Text>}
+            </ScrollView>
+            <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={saveDateEdit}>
+              <Text style={s.bigBtnT}>저장</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
       {/* 감시할 앱 설정 모달 */}
       <Modal visible={appsOpen} transparent animationType="slide" onRequestClose={() => setAppsOpen(false)}>
         <TouchableOpacity style={s.modalBg} activeOpacity={1} onPress={() => setAppsOpen(false)}>
@@ -2620,6 +2657,10 @@ const s = StyleSheet.create({
   ddayNum: { fontSize: 26, fontWeight: '800', marginTop: 4, letterSpacing: -0.5 },
   ddaySince: { color: C.faint, fontSize: 12, marginTop: 3 },
   savedTeaser: { color: C.sub, fontSize: 13, fontWeight: '600', textAlign: 'center', marginBottom: 12, marginTop: -2 },
+  dateEditBtn: { backgroundColor: C.card, borderRadius: 14, padding: 13, alignItems: 'center', marginBottom: 12 },
+  dateEditBtnT: { color: C.sub, fontSize: 13.5, fontWeight: '700' },
+  quickDate: { backgroundColor: C.card2, borderRadius: 99, paddingHorizontal: 12, paddingVertical: 7 },
+  quickDateT: { color: C.text, fontSize: 12.5, fontWeight: '700' },
   closeX: { color: C.sub, fontSize: 20, fontWeight: '700', padding: 4 },
   shopRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 8 },
   shopEmoji: { fontSize: 22, width: 30, textAlign: 'center' },
