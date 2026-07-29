@@ -408,6 +408,51 @@ export async function runRecurringGenerator() {
   return changed;
 }
 
+// ---------------- 알림 진단 / 감시 앱 직접 추가 ----------------
+// 카드사·은행 앱 패키지명은 앱마다 제각각이라 미리 다 알 수 없다.
+// 그래서 들어온 알림을 전부 기록해두고, 사용자가 목록에서 직접 감시 대상을 켤 수 있게 한다.
+const SEEN_APPS_KEY = 'seen_apps_v1';
+const WATCH_APPS_KEY = 'watch_apps_v1';
+
+export async function getSeenApps() {
+  try {
+    const raw = await AsyncStorage.getItem(SEEN_APPS_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+}
+
+// 알림이 올 때마다 호출: 어떤 앱이 무슨 내용을 보냈는지, 결제로 인식됐는지 기록
+export async function noteSeenApp(app, sampleText, captured) {
+  if (!app) return;
+  try {
+    const map = await getSeenApps();
+    const prev = map[app] || { count: 0 };
+    map[app] = {
+      count: prev.count + 1,
+      lastTs: new Date().toISOString(),
+      lastText: String(sampleText || '').slice(0, 80),
+      captured: captured || prev.captured || false,
+    };
+    // 너무 많이 쌓이지 않게 최근 40개 앱만 유지
+    const entries = Object.entries(map).sort((a, b) => new Date(b[1].lastTs) - new Date(a[1].lastTs)).slice(0, 40);
+    await AsyncStorage.setItem(SEEN_APPS_KEY, JSON.stringify(Object.fromEntries(entries)));
+  } catch { /* 진단 기록 실패는 무시 */ }
+}
+
+export async function getWatchApps() {
+  try {
+    const raw = await AsyncStorage.getItem(WATCH_APPS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+export async function toggleWatchApp(app) {
+  const list = await getWatchApps();
+  const next = list.includes(app) ? list.filter(a => a !== app) : [...list, app];
+  await AsyncStorage.setItem(WATCH_APPS_KEY, JSON.stringify(next));
+  return next;
+}
+
 // ---------------- 통장 잔액 (결제 문자에 찍혀 오는 "잔액 000원"을 기록) ----------------
 const BALANCE_KEY = 'balance_v1';
 
@@ -585,7 +630,7 @@ export async function saveExplanation(dateKey, text) {
 const BACKUP_KEYS = [
   DIARY_KEY, BUDGET_KEY, QUIT_SET_KEY, QUIT_DATES_KEY,
   MERCHANT_CAT_KEY, EXPLAIN_KEY, GOALS_KEY, RECUR_KEY, TAGS_KEY,
-  CARD_TARGET_KEY, BALANCE_KEY,
+  CARD_TARGET_KEY, BALANCE_KEY, WATCH_APPS_KEY,
 ];
 
 // 폰에 실제 데이터가 있는지 (재설치 직후 빈 상태를 구분하기 위함)

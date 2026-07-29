@@ -28,7 +28,21 @@ export const BANK_PACKAGES = [
   'kr.co.samsungcard.mpocket',  // 삼성카드
   'viva.republica.toss',        // 토스
   'com.kbcard.cxh.appcard',     // KB Pay(국민카드)
+  'com.kbcard.kbkookmincard',   // KB국민카드 (구버전 앱)
   'com.kbstar.kbbank',          // KB스타뱅킹
+  'com.kbstar.reboot',          // KB스타뱅킹 (신버전)
+  'com.kftc.kfx',               // 오픈뱅킹
+  'com.ibk.android.ionebank',   // 기업은행 i-ONE뱅크
+  'com.nh.cashcardapp',         // NH농협카드
+  'nh.smart.banking',           // NH스마트뱅킹
+  'com.wooribank.smart.npib',   // 우리WON뱅킹
+  'com.hanabank.ebk.channel.android.hananbank', // 하나원큐
+  'com.smg.spbs',               // 수협
+  'kr.co.citibank.citimobile',  // 씨티
+  'com.hanaskcard.rocomo.potal',// 하나카드(원큐페이)
+  'com.lotte.lottesmartpay',    // 롯데카드 디지로카
+  'kvp.jjy.MispAndroid320',     // ISP/페이북
+  'com.kbstar.liivbank',        // 리브
   'com.kakaobank.channel',      // 카카오뱅크
   'com.kakaopay.app',           // 카카오페이
   'com.wooricard.smartapp',     // 우리카드

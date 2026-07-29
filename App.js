@@ -17,12 +17,13 @@ import {
   getKnownTags, parseTags, setPaymentTags, recategorizeMerchant, countOtherCategory,
   backupNow, restoreFromBackup, getLastBackupAt, fetchBackupInfo, autoRestoreIfEmpty,
   pullFromSupabase, hasLocalData, findDuplicates, removeDuplicates,
+  getSeenApps, getWatchApps, toggleWatchApp,
   getBalance, getCardTargets, saveCardTargets, setOwed, toggleOwedSettled,
 } from './src/store';
 import { cycleLabel, nextDueLabel, addDays as addDaysLocal } from './src/recurring';
 import { goalRange, goalPeriodLabel, goalKindLabel, daysLeftLabel, weekRange as weekRangeLocal } from './src/goals';
 import { parsePayment } from './src/parser';
-import { QUIT_GOALS, CATEGORIES, SHOP_ITEMS, SUPABASE_URL } from './src/config';
+import { QUIT_GOALS, CATEGORIES, SHOP_ITEMS, SUPABASE_URL, BANK_PACKAGES } from './src/config';
 import { requestWidgetUpdate } from 'react-native-android-widget';
 import { CleanpayWidget } from './src/widget/CleanpayWidget';
 import { buildSummary } from './src/summary';
@@ -37,7 +38,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r32'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r33'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const LOCK_LIMIT = 100000;   // 하루 이만큼 넘게 쓰면 소명 요청
 const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
 // 건강 회복 타임라인 (일 기준)
@@ -236,6 +237,9 @@ function MainApp({ profile, onSignOut }) {
   const [lastBackup, setLastBackup] = useState(null);
   const [backupBusy, setBackupBusy] = useState(false);
   const [dupPairs, setDupPairs] = useState([]);
+  const [seenApps, setSeenApps] = useState({});
+  const [watchApps, setWatchApps] = useState([]);
+  const [appsOpen, setAppsOpen] = useState(false);
   const [balance, setBalance] = useState(null);
   const [cardTargets, setCardTargets] = useState({});
   const [cardTargetOpen, setCardTargetOpen] = useState(false);
@@ -308,6 +312,7 @@ function MainApp({ profile, onSignOut }) {
     setKnownTags(tg); setLastBackup(bk); setBalance(bal); setCardTargets(ct); setPerm(st);
 
     setDupPairs(await findDuplicates()); // 이미 쌓인 중복 감지
+    setSeenApps(await getSeenApps()); setWatchApps(await getWatchApps());
 
     // 홈 화면 위젯도 최신 값으로 갱신 (위젯을 안 올려놨으면 조용히 무시됨)
     try {
@@ -2239,6 +2244,15 @@ function MainApp({ profile, onSignOut }) {
             <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={shareLinkNative} disabled={!shareLink}>
               <Text style={s.bigBtnT}>카톡 등으로 보내기</Text>
             </TouchableOpacity>
+            <TouchableOpacity style={[s.backupBox, { marginTop: 16 }]} activeOpacity={0.8}
+              onPress={() => { setShareOpen(false); setAppsOpen(true); }}>
+              <Text style={s.backupTitle}>📲 감시할 앱 설정</Text>
+              <Text style={s.backupSub}>
+                카드 알림이 안 잡히면 여기서 그 앱을 켜주세요.{'\n'}
+                감시 중 {BANK_PACKAGES.length + watchApps.length}개 · 최근 알림 온 앱 {Object.keys(seenApps).length}개
+              </Text>
+            </TouchableOpacity>
+
             <View style={s.backupBox}>
               <Text style={s.backupTitle}>백업 · 복구</Text>
               <Text style={s.backupSub}>
@@ -2342,6 +2356,56 @@ function MainApp({ profile, onSignOut }) {
             </ScrollView>
             <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={saveBudgetDraft}>
               <Text style={s.bigBtnT}>저장</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* 감시할 앱 설정 모달 */}
+      <Modal visible={appsOpen} transparent animationType="slide" onRequestClose={() => setAppsOpen(false)}>
+        <TouchableOpacity style={s.modalBg} activeOpacity={1} onPress={() => setAppsOpen(false)}>
+          <View style={s.modalCard} onStartShouldSetResponder={() => true}>
+            <View style={s.grabber} />
+            <Text style={s.modalTitle}>감시할 앱 설정</Text>
+            <Text style={s.modalSub}>
+              최근 알림이 온 앱 목록이에요. 카드·은행 앱이 안 잡히면 여기서 켜주세요.{'\n'}
+              (앱 이름이 영문 코드로 보이는 건 정상이에요)
+            </Text>
+            <ScrollView style={{ maxHeight: 400 }}>
+              {Object.keys(seenApps).length === 0 && (
+                <Text style={s.statEmpty}>
+                  아직 기록된 알림이 없어요.{'\n'}
+                  알림 접근 권한을 켜고, 카드 결제 알림이 한 번 온 뒤에 다시 열어보세요.
+                </Text>
+              )}
+              {Object.entries(seenApps)
+                .sort((a, b) => new Date(b[1].lastTs) - new Date(a[1].lastTs))
+                .map(([app, info]) => {
+                  const isDefault = BANK_PACKAGES.includes(app);
+                  const on = isDefault || watchApps.includes(app);
+                  return (
+                    <TouchableOpacity key={app} style={s.appRow} activeOpacity={0.7}
+                      disabled={isDefault}
+                      onPress={async () => setWatchApps(await toggleWatchApp(app))}>
+                      <View style={[s.checkbox, on && { backgroundColor: C.blue, borderColor: C.blue }]}>
+                        {on && <Text style={s.checkboxMark}>✓</Text>}
+                      </View>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={s.appRowName} numberOfLines={1}>{app}</Text>
+                        <Text style={s.appRowSub} numberOfLines={1}>
+                          {isDefault ? '기본 감시 중' : on ? '감시 중' : '꺼짐'} · 알림 {info.count}회
+                          {info.captured ? ' · 결제 인식됨 ✓' : ''}
+                        </Text>
+                        {!!info.lastText && (
+                          <Text style={s.appRowText} numberOfLines={1}>{info.lastText}</Text>
+                        )}
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+            </ScrollView>
+            <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={async () => { setAppsOpen(false); await load(); }}>
+              <Text style={s.bigBtnT}>완료</Text>
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
@@ -2636,6 +2700,10 @@ const s = StyleSheet.create({
   tagSuggestT: { color: C.blueText, fontSize: 12, fontWeight: '700' },
   backupBox: { backgroundColor: C.card2, borderRadius: 16, padding: 16, marginTop: 20 },
   backupTitle: { color: C.text, fontSize: 14.5, fontWeight: '800' },
+  appRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: C.card2 },
+  appRowName: { color: C.text, fontSize: 13.5, fontWeight: '700' },
+  appRowSub: { color: C.faint, fontSize: 11.5, marginTop: 2 },
+  appRowText: { color: C.sub, fontSize: 11, marginTop: 3 },
   backupSub: { color: C.faint, fontSize: 12, lineHeight: 18, marginTop: 5 },
   splitBaseAmt: { color: C.text, fontSize: 20, fontWeight: '800', marginTop: 2, marginBottom: 4, letterSpacing: -0.4 },
 
