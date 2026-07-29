@@ -130,7 +130,7 @@ export async function savePayment(record) {
 
   // 결제 취소/환불 알림: 원래 결제를 찾아 '환불됨'으로 표시해 합계에서 빼줌.
   // 원 결제를 못 찾으면(앱 설치 전 결제 등) 환불 기록만 따로 남겨 사용자가 확인할 수 있게 함.
-  if (record.refund) {
+  if (record.refund && record.type !== 'income') {
     const rTs = new Date(record.ts);
     const origin = list.find(p => !p.deleted && !p.refunded && !p.isRefund
       && p.amount === record.amount

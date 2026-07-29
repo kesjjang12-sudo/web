@@ -16,6 +16,7 @@ const STOPWORDS = [
   '승인', '취소', '환불', '승인취소', '일시불', '할부', '체크', '신용', '해외', '국내',
   '누적', '잔액', '출금', '입금', '결제', '됐어요', '되었습니다', '완료',
   'KRW', '원', '님', '고객님', '회원님', '카드', '에서', '사용', '법인', 'ZERO', '체크', '신용',
+  '입출금', '입출금알림', '알림', '이체',
   '신한', '현대', '삼성', '국민', 'KB', '우리', '하나', 'NH', '농협', '롯데', '토스', '카카오뱅크', '카카오페이',
 ];
 
@@ -36,10 +37,16 @@ export function parsePayment(rawText) {
   // 결제 알림이 아닌 것 거르기 (광고, 이벤트 등)
   const amountMatch = text.match(AMOUNT_RE);
   if (!amountMatch) return null;
-  const isPayment = /승인|결제|사용|출금|취소|환불/.test(text);
+  // "입출금알림" 같은 알림 분류명에는 '출금'이 들어 있어 지출로 오인됨 → 판정에서 제외
+  const kindText = text.replace(/입출금/g, ' ');
+
+  // 입금(받은 돈)이면 지출이 아니라 수입으로 기록
+  const isDeposit = /입금/.test(kindText) && !/출금|결제|승인/.test(kindText);
+
+  const isPayment = isDeposit || /승인|결제|사용|출금|취소|환불/.test(kindText);
   if (!isPayment) return null;
   // 결제 취소/환불 알림은 버리지 않고 refund 플래그를 달아서 원 결제를 상쇄하도록 함
-  const refund = /취소|환불/.test(text);
+  const refund = /취소|환불/.test(kindText);
   // 카드값/요금이 통장에서 빠져나가는 알림은 제외 (개별 카드 결제가 이미 기록돼서 이중집계됨)
   if (/카드대금|카드값/.test(text)) return null;
   if (/출금되었습니다/.test(text)) return null; // "○○월 출금되었습니다", "회원님 ... 출금되었습니다" 등 청구서형 문자
@@ -75,6 +82,7 @@ export function parsePayment(rawText) {
   return {
     merchant, amount, raw: text,
     ...(refund ? { refund: true } : {}),
+    ...(isDeposit ? { type: 'income' } : {}),
     ...(balance != null ? { balance } : {}),
   };
 }
