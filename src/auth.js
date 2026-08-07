@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from './supabase';
 
 export async function getSession() {
@@ -6,9 +7,18 @@ export async function getSession() {
   return data.session;
 }
 
+// 네트워크 없이도 "이 폰에 로그인 기록이 있는지" 확인.
+// 세션 확인이 느리거나 실패했을 때 로그인 화면으로 튕기지 않기 위해 사용.
+export async function hasStoredSession() {
+  try {
+    const keys = await AsyncStorage.getAllKeys();
+    return keys.some(k => k.startsWith('sb-') && k.includes('auth-token'));
+  } catch { return false; }
+}
+
 export function onAuthChange(cb) {
   if (!supabase) return { unsubscribe() {} };
-  const { data } = supabase.auth.onAuthStateChange((_event, session) => cb(session));
+  const { data } = supabase.auth.onAuthStateChange((event, session) => cb(session, event));
   return data.subscription;
 }
 

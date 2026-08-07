@@ -28,7 +28,7 @@ import { requestWidgetUpdate } from 'react-native-android-widget';
 import { CleanpayWidget } from './src/widget/CleanpayWidget';
 import { buildSummary } from './src/summary';
 import { hasSupabase } from './src/supabase';
-import { getSession, onAuthChange, signUp, signIn, signOut, getMyProfile } from './src/auth';
+import { getSession, onAuthChange, signUp, signIn, signOut, getMyProfile, hasStoredSession } from './src/auth';
 
 const SHARE_BASE_URL = 'https://kesjjang12-sudo.github.io/web/';
 
@@ -38,7 +38,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r35'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r36'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const LOCK_LIMIT = 100000;   // 하루 이만큼 넘게 쓰면 소명 요청
 const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
 // 건강 회복 타임라인 (일 기준)
@@ -106,6 +106,7 @@ export default function Root() {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
   const [restored, setRestored] = useState(0);
+  const [assumeLoggedIn, setAssumeLoggedIn] = useState(false);
 
   useEffect(() => {
     if (!hasSupabase) { setChecking(false); return; }
@@ -131,22 +132,53 @@ export default function Root() {
     const withTimeout = (p, ms) => Promise.race([
       p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms)),
     ]);
+
     (async () => {
+      let s = null;
       try {
-        const s = await withTimeout(getSession(), 8000);
-        if (cancelled) return;
+        s = await withTimeout(getSession(), 15000);
+      } catch (e) { /* 느린 네트워크 — 아래에서 저장된 로그인으로 판단 */ }
+      if (cancelled) return;
+
+      if (s) {
         setSession(s);
-        if (s) await afterLogin();
-      } catch (e) {
-        // 세션 확인 자체가 실패해도(오프라인 등) 로그인 화면으로 보내서 재시도할 수 있게 함
-      } finally {
-        if (!cancelled) setChecking(false);
+        setChecking(false);
+        afterLogin();
+        return;
       }
+
+      // 세션 확인엔 실패했지만 이 폰에 로그인 기록이 있으면 로그인 화면으로 보내지 않는다.
+      // (네트워크가 느리다는 이유로 로그아웃된 것처럼 보이던 문제)
+      if (await hasStoredSession()) {
+        if (cancelled) return;
+        setAssumeLoggedIn(true);
+        setChecking(false);
+        // 백그라운드에서 계속 재시도 — 성공하면 정상 세션으로 전환
+        (async () => {
+          for (let i = 0; i < 5 && !cancelled; i++) {
+            await new Promise(r => setTimeout(r, 3000 * (i + 1)));
+            try {
+              const s2 = await getSession();
+              if (s2 && !cancelled) { setSession(s2); afterLogin(); return; }
+            } catch (e) { /* 다음 시도 */ }
+          }
+        })();
+        return;
+      }
+
+      setChecking(false); // 정말 로그인한 적이 없음 → 로그인 화면
     })();
 
-    const sub = onAuthChange(async (s) => {
+    const sub = onAuthChange(async (s, event) => {
+      // 사용자가 직접 로그아웃한 경우에만 세션을 비운다.
+      // 토큰 갱신 실패 등으로 일시적으로 null이 와도 로그아웃시키지 않음.
+      if (!s) {
+        if (event === 'SIGNED_OUT') { setSession(null); setAssumeLoggedIn(false); setProfile(null); }
+        return;
+      }
       setSession(s);
-      if (s) await afterLogin(); else setProfile(null);
+      setAssumeLoggedIn(false);
+      await afterLogin();
     });
     return () => { cancelled = true; sub.unsubscribe(); };
   }, []);
@@ -159,7 +191,7 @@ export default function Root() {
       </SafeAreaView>
     );
   }
-  if (!session) return <AuthScreen />;
+  if (!session && !assumeLoggedIn) return <AuthScreen />;
   // restored가 바뀌면 MainApp을 다시 마운트해 복구된 데이터를 즉시 반영
   return <MainApp key={restored} profile={profile} onSignOut={async () => { await signOut(); }} />;
 }
