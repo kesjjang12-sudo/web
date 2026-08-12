@@ -12,7 +12,7 @@
     "scheme": "cleanpay",
     "android": {
       "package": "com.eunsung.cleanpay",
-      "versionCode": 3,
+      "versionCode": 4,
       "allowBackup": false,
       "adaptiveIcon": {
         "backgroundColor": "#0f1115"
