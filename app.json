@@ -6,11 +6,21 @@
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "backgroundColor": "#0f1115",
-    "splash": { "backgroundColor": "#0f1115" },
+    "splash": {
+      "backgroundColor": "#0f1115"
+    },
     "android": {
       "package": "com.eunsung.cleanpay",
       "versionCode": 1,
-      "adaptiveIcon": { "backgroundColor": "#0f1115" }
-    }
+      "adaptiveIcon": {
+        "backgroundColor": "#0f1115"
+      }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "d0a12465-d594-4230-a6e3-76df1ffa8e91"
+      }
+    },
+    "owner": "kesjjang4545"
   }
 }
