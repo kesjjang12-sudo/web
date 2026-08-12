@@ -10,12 +10,18 @@
 4. 폰에 저장 + (선택) Supabase로 동기화 → 여자친구용 웹페이지에서 조회
 
 ## 1단계. APK 빌드 (전에 하던 것과 동일)
-```bash
+```powershell
 cd cleanpay
 npm install
-eas build -p android --profile apk    # eas.json 없다고 하면: eas build:configure 후 재시도
+npx eas-cli login                          # 처음 한 번만
+npx eas-cli build -p android --profile apk
 ```
-빌드 링크로 폰에 설치.
+빌드가 끝나면 나오는 링크로 폰에 설치.
+
+⚠️ **`--local` 옵션은 절대 붙이지 마세요.**
+`--local`은 내 PC에서 직접 빌드하라는 뜻인데, 안드로이드 로컬 빌드는 macOS/Linux + Android SDK가 있어야 합니다.
+Windows에서 쓰면 `Unsupported platform, macOS or Linux is required to build apps for Android` 에러가 납니다.
+우리는 EAS 클라우드(Expo 서버)에서 빌드하므로 `--local` 없이 실행하면 됩니다.
 
 ## 2단계. 폰에서 설정 (중요!)
 1. 앱 실행 → 노란 배너 탭 → 설정에서 "클린페이" 알림 접근 허용
