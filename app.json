@@ -6,11 +6,50 @@
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "backgroundColor": "#0f1115",
-    "splash": { "backgroundColor": "#0f1115" },
+    "splash": {
+      "backgroundColor": "#0f1115"
+    },
+    "scheme": "cleanpay",
     "android": {
       "package": "com.eunsung.cleanpay",
-      "versionCode": 1,
-      "adaptiveIcon": { "backgroundColor": "#0f1115" }
-    }
+      "versionCode": 4,
+      "allowBackup": false,
+      "adaptiveIcon": {
+        "backgroundColor": "#0f1115"
+      }
+    },
+    "plugins": [
+      [
+        "react-native-android-widget",
+        {
+          "widgets": [
+            {
+              "name": "Cleanpay",
+              "label": "클린페이",
+              "description": "오늘·이번 달 지출과 금주·금연 일수를 한눈에",
+              "minWidth": "180dp",
+              "minHeight": "150dp",
+              "targetCellWidth": 4,
+              "targetCellHeight": 3,
+              "resizeMode": "horizontal|vertical",
+              "updatePeriodMillis": 1800000
+            }
+          ]
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "2d76d3fb-fd55-4f2e-b42d-8fc6ac7ef5ef"
+      }
+    },
+    "owner": "kesjjang4545s-team",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/2d76d3fb-fd55-4f2e-b42d-8fc6ac7ef5ef"
+    },
+    "ios": {}
   }
 }
