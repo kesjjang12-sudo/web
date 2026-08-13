@@ -6,6 +6,7 @@
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "backgroundColor": "#0f1115",
+    "plugins": ["./plugins/withAllowBackupFix"],
     "splash": {
       "backgroundColor": "#0f1115"
     },
