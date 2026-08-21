@@ -38,7 +38,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r36'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r37'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const LOCK_LIMIT = 100000;   // 하루 이만큼 넘게 쓰면 소명 요청
 const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
 // 건강 회복 타임라인 (일 기준)
@@ -272,6 +272,7 @@ function MainApp({ profile, onSignOut }) {
   const [seenApps, setSeenApps] = useState({});
   const [watchApps, setWatchApps] = useState([]);
   const [appsOpen, setAppsOpen] = useState(false);
+  const [diagOpen, setDiagOpen] = useState(false);
   const [balance, setBalance] = useState(null);
   const [cardTargets, setCardTargets] = useState({});
   const [cardTargetOpen, setCardTargetOpen] = useState(false);
@@ -388,6 +389,62 @@ function MainApp({ profile, onSignOut }) {
     const d = new Date(p.ts);
     return d.getFullYear() === ym.getFullYear() && d.getMonth() === ym.getMonth();
   };
+  // ---- 알림 리스너 자가진단 ----
+  // 안드로이드는 권한이 "켜짐"으로 보여도 재설치·최적화 때문에 서비스가 실제로는 죽어 있을 수 있다.
+  // 그래서 권한 상태만 믿지 않고 "실제로 알림이 들어오고 있는지"로 판단한다.
+  const listenerHealth = useMemo(() => {
+    const entries = Object.entries(seenApps);
+    const lastTs = entries.reduce((m, [, v]) => {
+      const t = new Date(v.lastTs).getTime();
+      return t > m ? t : m;
+    }, 0);
+    const hours = lastTs ? (Date.now() - lastTs) / 3600000 : Infinity;
+    const anyCaptured = entries.some(([, v]) => v.captured);
+    // 감시 중인 앱에서 알림은 왔는데 결제로 인식된 적이 한 번도 없는 경우
+    const watchedSeen = entries.filter(([app]) => BANK_PACKAGES.includes(app) || watchApps.includes(app));
+
+    if (entries.length === 0) {
+      return { level: 'dead', lastTs, hours, anyCaptured, watchedSeen,
+        title: '알림이 하나도 안 들어오고 있어요',
+        sub: '권한은 켜져 있는데 앱이 알림을 못 받는 상태예요.' };
+    }
+    if (hours > 24) {
+      return { level: 'stale', lastTs, hours, anyCaptured, watchedSeen,
+        title: `${Math.floor(hours / 24)}일째 알림이 안 들어와요`,
+        sub: '알림 감시 기능이 꺼졌을 수 있어요.' };
+    }
+    if (watchedSeen.length === 0) {
+      return { level: 'unwatched', lastTs, hours, anyCaptured, watchedSeen,
+        title: '카드·문자 앱이 감시 목록에 없어요',
+        sub: '알림은 들어오는데 감시 대상 앱이 아니에요.' };
+    }
+    if (!anyCaptured) {
+      return { level: 'noparse', lastTs, hours, anyCaptured, watchedSeen,
+        title: '알림은 들어오는데 결제로 인식이 안 돼요',
+        sub: '알림 문구를 알려주시면 인식 규칙을 고칠 수 있어요.' };
+    }
+    return { level: 'ok', lastTs, hours, anyCaptured, watchedSeen,
+      title: '정상 작동 중', sub: '' };
+  }, [seenApps, watchApps]);
+
+  // 진단 내용을 그대로 복사해서 보낼 수 있게 (카톡 등으로 붙여넣기)
+  const shareDiagnostics = () => {
+    const lines = [
+      `[클린페이 진단 ${REV}]`,
+      `알림 권한: ${perm}`,
+      `상태: ${listenerHealth.level} — ${listenerHealth.title}`,
+      `마지막 알림: ${listenerHealth.lastTs ? new Date(listenerHealth.lastTs).toLocaleString('ko-KR') : '없음'}`,
+      `기록 개수: ${payments.filter(p => !p.deleted).length}건`,
+      '',
+      '최근 알림 온 앱:',
+      ...Object.entries(seenApps)
+        .sort((a, b) => new Date(b[1].lastTs) - new Date(a[1].lastTs))
+        .slice(0, 10)
+        .map(([app, i]) => `- ${app} (${i.count}회, ${i.captured ? '인식됨' : '인식 안됨'})\n  "${i.lastText || ''}"`),
+    ];
+    Share.share({ message: lines.join('\n') });
+  };
+
   // 지출 (삭제/수입 제외)
   const monthPays = useMemo(() => payments.filter(p => !p.deleted && !p.refunded && !p.isRefund && !isIncome(p) && !isSaving(p) && inMonth(p, viewYM)), [payments, monthOffset]);
   const monthIncome = useMemo(() => payments.filter(p => !p.deleted && isIncome(p) && inMonth(p, viewYM)), [payments, monthOffset]);
@@ -1206,6 +1263,14 @@ function MainApp({ profile, onSignOut }) {
             onPress={() => RNAndroidNotificationListener.requestPermission()}>
             <Text style={s.permTitle}>알림 접근 권한이 필요해요</Text>
             <Text style={s.permSub}>탭하면 설정이 열려요 → 목록에서 "클린페이" 켜기</Text>
+          </TouchableOpacity>
+        )}
+
+        {/* 알림이 안 잡힐 때 스스로 원인을 찾을 수 있는 진단 카드 */}
+        {perm === 'authorized' && listenerHealth.level !== 'ok' && (
+          <TouchableOpacity style={s.permBanner} activeOpacity={0.85} onPress={() => setDiagOpen(true)}>
+            <Text style={s.permTitle}>🩺 {listenerHealth.title}</Text>
+            <Text style={s.permSub}>{listenerHealth.sub}{'\n'}탭하면 원인과 해결 방법을 보여줘요</Text>
           </TouchableOpacity>
         )}
 
@@ -2265,6 +2330,16 @@ function MainApp({ profile, onSignOut }) {
               <Text style={s.bigBtnT}>카톡 등으로 보내기</Text>
             </TouchableOpacity>
             <TouchableOpacity style={[s.backupBox, { marginTop: 16 }]} activeOpacity={0.8}
+              onPress={() => { setShareOpen(false); setDiagOpen(true); }}>
+              <Text style={s.backupTitle}>🩺 알림 자가진단</Text>
+              <Text style={s.backupSub}>
+                결제가 안 잡힐 때 여기서 원인을 바로 확인할 수 있어요.{'\n'}
+                지금 상태: {perm !== 'authorized' ? '권한 꺼짐 ✗'
+                  : listenerHealth.level === 'ok' ? '정상 ✓' : listenerHealth.title}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={[s.backupBox, { marginTop: 12 }]} activeOpacity={0.8}
               onPress={() => { setShareOpen(false); setAppsOpen(true); }}>
               <Text style={s.backupTitle}>📲 감시할 앱 설정</Text>
               <Text style={s.backupSub}>
@@ -2426,6 +2501,96 @@ function MainApp({ profile, onSignOut }) {
             <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={saveDateEdit}>
               <Text style={s.bigBtnT}>저장</Text>
             </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* 알림 자가진단 모달 */}
+      <Modal visible={diagOpen} transparent animationType="slide" onRequestClose={() => setDiagOpen(false)}>
+        <TouchableOpacity style={s.modalBg} activeOpacity={1} onPress={() => setDiagOpen(false)}>
+          <View style={s.modalCard} onStartShouldSetResponder={() => true}>
+            <View style={s.grabber} />
+            <Text style={s.modalTitle}>🩺 알림 자가진단</Text>
+            <ScrollView style={{ maxHeight: 460 }}>
+              <View style={s.diagRow}>
+                <Text style={s.diagLabel}>알림 접근 권한</Text>
+                <Text style={[s.diagVal, { color: perm === 'authorized' ? C.green : C.red }]}>
+                  {perm === 'authorized' ? '켜짐 ✓' : '꺼짐 ✗'}
+                </Text>
+              </View>
+              <View style={s.diagRow}>
+                <Text style={s.diagLabel}>마지막으로 받은 알림</Text>
+                <Text style={[s.diagVal, { color: listenerHealth.hours > 24 ? C.red : C.text }]}>
+                  {listenerHealth.lastTs
+                    ? new Date(listenerHealth.lastTs).toLocaleString('ko-KR')
+                    : '없음'}
+                </Text>
+              </View>
+              <View style={s.diagRow}>
+                <Text style={s.diagLabel}>감시 중인 앱에서 온 알림</Text>
+                <Text style={s.diagVal}>{listenerHealth.watchedSeen.length}개 앱</Text>
+              </View>
+              <View style={s.diagRow}>
+                <Text style={s.diagLabel}>결제로 인식된 적</Text>
+                <Text style={[s.diagVal, { color: listenerHealth.anyCaptured ? C.green : C.red }]}>
+                  {listenerHealth.anyCaptured ? '있음 ✓' : '없음 ✗'}
+                </Text>
+              </View>
+
+              <View style={s.backupBox}>
+                <Text style={s.backupTitle}>
+                  {listenerHealth.level === 'ok' ? '✅ 정상이에요' : `⚠️ ${listenerHealth.title}`}
+                </Text>
+                <Text style={s.backupSub}>
+                  {perm !== 'authorized'
+                    ? '① 아래 "권한 설정 열기"를 눌러 목록에서 "클린페이"를 켜주세요.'
+                    : listenerHealth.level === 'dead' || listenerHealth.level === 'stale'
+                    ? '안드로이드는 앱을 다시 설치하면 권한이 "켜짐"으로 보여도 실제로는 알림을 안 넘겨주는 경우가 많아요.\n\n① "권한 설정 열기"를 누르세요\n② 목록에서 클린페이를 껐다가\n③ 다시 켜주세요\n④ 그리고 폰 설정 → 배터리 → 클린페이 → "제한 없음"으로 바꿔주세요'
+                    : listenerHealth.level === 'unwatched'
+                    ? '알림은 잘 들어오고 있어요. 다만 그 앱이 감시 대상이 아니에요.\n아래 "감시할 앱 설정"에서 카드·문자 앱을 켜주세요.'
+                    : listenerHealth.level === 'noparse'
+                    ? '알림은 들어오는데 금액·가맹점을 못 읽고 있어요.\n아래 "진단 내용 보내기"로 알림 문구를 보내주시면 인식 규칙을 고쳐드릴게요.'
+                    : '알림도 잘 들어오고 결제도 잘 인식되고 있어요.'}
+                </Text>
+              </View>
+
+              <Text style={[s.modalSub, { marginTop: 14 }]}>최근 알림이 온 앱 (최신순)</Text>
+              {Object.keys(seenApps).length === 0 && (
+                <Text style={s.statEmpty}>기록된 알림이 없어요.</Text>
+              )}
+              {Object.entries(seenApps)
+                .sort((a, b) => new Date(b[1].lastTs) - new Date(a[1].lastTs))
+                .slice(0, 10)
+                .map(([app, info]) => (
+                  <View key={app} style={s.appRow}>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={s.appRowName} numberOfLines={1}>{app}</Text>
+                      <Text style={s.appRowSub} numberOfLines={1}>
+                        {new Date(info.lastTs).toLocaleString('ko-KR')} · {info.count}회
+                        {info.captured ? ' · 인식됨 ✓' : ''}
+                      </Text>
+                      {!!info.lastText && (
+                        <Text style={s.appRowText} numberOfLines={2}>{info.lastText}</Text>
+                      )}
+                    </View>
+                  </View>
+                ))}
+            </ScrollView>
+
+            <TouchableOpacity style={s.bigBtn} activeOpacity={0.85}
+              onPress={() => RNAndroidNotificationListener.requestPermission()}>
+              <Text style={s.bigBtnT}>권한 설정 열기 (껐다 켜기)</Text>
+            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
+              <TouchableOpacity style={[s.bigBtn, { flex: 1, marginTop: 0, backgroundColor: C.card2 }]}
+                activeOpacity={0.85} onPress={() => { setDiagOpen(false); setAppsOpen(true); }}>
+                <Text style={[s.bigBtnT, { color: C.text }]}>감시할 앱 설정</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[s.bigBtn, { flex: 1, marginTop: 0, backgroundColor: C.card2 }]}
+                activeOpacity={0.85} onPress={shareDiagnostics}>
+                <Text style={[s.bigBtnT, { color: C.text }]}>진단 내용 보내기</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </TouchableOpacity>
       </Modal>
@@ -2679,6 +2844,10 @@ const s = StyleSheet.create({
   topRow: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', marginTop: 10, marginBottom: 16 },
   appTitle: { color: C.text, fontSize: 22, fontWeight: '800', letterSpacing: -0.5 },
   appSub: { color: C.faint, fontSize: 13 },
+  diagRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: C.card2, gap: 12 },
+  diagLabel: { color: C.sub, fontSize: 13.5 },
+  diagVal: { color: C.text, fontSize: 13.5, fontWeight: '700', flexShrink: 1, textAlign: 'right' },
   permBanner: { backgroundColor: '#2A2417', borderRadius: 18, padding: 18, marginBottom: 14 },
   permTitle: { color: C.gold, fontWeight: '800', fontSize: 15 },
   permSub: { color: '#B5A268', fontSize: 13, marginTop: 4, lineHeight: 19 },
