@@ -4,6 +4,7 @@ import {
   Alert, Modal, TextInput, AppState, RefreshControl, Share, ActivityIndicator, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import * as Updates from 'expo-updates';
 import RNAndroidNotificationListener from 'react-native-android-notification-listener';
 import {
   getPayments, savePayment, updateItem, deletePayment, restorePayment, purgePayment,
@@ -38,7 +39,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r37'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r38'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const LOCK_LIMIT = 100000;   // 하루 이만큼 넘게 쓰면 소명 요청
 const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
 // 건강 회복 타임라인 (일 기준)
@@ -273,6 +274,7 @@ function MainApp({ profile, onSignOut }) {
   const [watchApps, setWatchApps] = useState([]);
   const [appsOpen, setAppsOpen] = useState(false);
   const [diagOpen, setDiagOpen] = useState(false);
+  const [updBusy, setUpdBusy] = useState(false);
   const [balance, setBalance] = useState(null);
   const [cardTargets, setCardTargets] = useState({});
   const [cardTargetOpen, setCardTargetOpen] = useState(false);
@@ -324,6 +326,31 @@ function MainApp({ profile, onSignOut }) {
     if (!shareLink) return;
     Share.share({ message: `내 가계부·D-day를 실시간으로 볼 수 있어요 💙\n${shareLink}` });
   }, [shareLink]);
+
+  // 업데이트를 직접 받아서 바로 적용 (원래는 앱을 두 번 껐다 켜야 반영됨)
+  const checkUpdate = useCallback(async () => {
+    if (!Updates.isEnabled) {
+      Alert.alert('업데이트를 확인할 수 없어요', '개발용으로 실행 중이거나 업데이트가 꺼진 빌드예요.');
+      return;
+    }
+    setUpdBusy(true);
+    try {
+      const r = await Updates.checkForUpdateAsync();
+      if (!r.isAvailable) {
+        Alert.alert('이미 최신 버전이에요', `지금 버전: ${REV}`);
+        return;
+      }
+      await Updates.fetchUpdateAsync();
+      Alert.alert('새 버전을 받았어요', '지금 바로 적용할까요?', [
+        { text: '나중에', style: 'cancel' },
+        { text: '지금 적용', onPress: () => Updates.reloadAsync() },
+      ]);
+    } catch (e) {
+      Alert.alert('업데이트 확인 실패', `${e?.message || e}\n\n인터넷 연결을 확인하고 다시 눌러주세요.`);
+    } finally {
+      setUpdBusy(false);
+    }
+  }, []);
 
   const confirmSignOut = useCallback(() => {
     Alert.alert('로그아웃 할까요?', '', [
@@ -2329,7 +2356,20 @@ function MainApp({ profile, onSignOut }) {
             <TouchableOpacity style={s.bigBtn} activeOpacity={0.85} onPress={shareLinkNative} disabled={!shareLink}>
               <Text style={s.bigBtnT}>카톡 등으로 보내기</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={[s.backupBox, { marginTop: 16 }]} activeOpacity={0.8}
+            <View style={[s.backupBox, { marginTop: 16 }]}>
+              <Text style={s.backupTitle}>⬇️ 앱 업데이트</Text>
+              <Text style={s.backupSub}>
+                지금 버전: {REV}{'\n'}
+                새 기능이 안 보이면 여기를 눌러서 바로 받아오세요.
+              </Text>
+              <TouchableOpacity style={[s.bigBtn, { marginTop: 12 }]} activeOpacity={0.85}
+                onPress={checkUpdate} disabled={updBusy}>
+                {updBusy ? <ActivityIndicator color="#fff" />
+                  : <Text style={s.bigBtnT}>업데이트 확인하고 바로 적용</Text>}
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity style={[s.backupBox, { marginTop: 12 }]} activeOpacity={0.8}
               onPress={() => { setShareOpen(false); setDiagOpen(true); }}>
               <Text style={s.backupTitle}>🩺 알림 자가진단</Text>
               <Text style={s.backupSub}>
