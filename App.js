@@ -39,7 +39,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r38'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r39'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const LOCK_LIMIT = 100000;   // 하루 이만큼 넘게 쓰면 소명 요청
 const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
 // 건강 회복 타임라인 (일 기준)
@@ -102,7 +102,57 @@ const srcName = app => !app || app === 'manual' ? '직접 입력' : app === 'tes
 const isIncome = p => p.type === 'income';
 const isSaving = p => p.type === 'saving';
 
+// 화면이 터졌을 때 하얀 화면 대신 원인을 보여주고 스스로 복구할 수 있게 하는 안전망.
+// (이게 없으면 오류가 나도 사용자는 "앱이 안 켜져요" 밖에 알 수 없음)
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { err: null }; }
+  static getDerivedStateFromError(err) { return { err }; }
+  componentDidCatch(err, info) { this.info = info; }
+
+  render() {
+    if (!this.state.err) return this.props.children;
+    const msg = `${this.state.err?.message || this.state.err}\n\n${this.info?.componentStack || ''}`.slice(0, 1500);
+    return (
+      <SafeAreaView style={[s.root, { padding: 20, justifyContent: 'center' }]}>
+        <Text style={{ color: C.text, fontSize: 20, fontWeight: '800' }}>앱에 문제가 생겼어요</Text>
+        <Text style={{ color: C.sub, fontSize: 13.5, marginTop: 8, lineHeight: 20 }}>
+          데이터는 폰과 서버에 그대로 있어요. 아래 버튼으로 고칠 수 있어요.{'\n'}버전: {REV}
+        </Text>
+        <ScrollView style={{ maxHeight: 200, marginTop: 16, backgroundColor: C.card, borderRadius: 12, padding: 12 }}>
+          <Text style={{ color: C.red, fontSize: 11.5, lineHeight: 17 }}>{msg}</Text>
+        </ScrollView>
+        <TouchableOpacity style={[s.bigBtn, { marginTop: 16 }]} activeOpacity={0.85}
+          onPress={async () => {
+            try {
+              if (Updates.isEnabled) {
+                const r = await Updates.checkForUpdateAsync();
+                if (r.isAvailable) { await Updates.fetchUpdateAsync(); }
+                await Updates.reloadAsync();
+                return;
+              }
+            } catch (e) { /* 아래 재시도로 폴백 */ }
+            this.setState({ err: null });
+          }}>
+          <Text style={s.bigBtnT}>고친 버전 받아서 다시 시작</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[s.bigBtn, { marginTop: 10, backgroundColor: C.card2 }]} activeOpacity={0.85}
+          onPress={() => this.setState({ err: null })}>
+          <Text style={[s.bigBtnT, { color: C.text }]}>그냥 다시 시도</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[s.bigBtn, { marginTop: 10, backgroundColor: C.card2 }]} activeOpacity={0.85}
+          onPress={() => Share.share({ message: `[클린페이 오류 ${REV}]\n${msg}` })}>
+          <Text style={[s.bigBtnT, { color: C.text }]}>오류 내용 보내기</Text>
+        </TouchableOpacity>
+      </SafeAreaView>
+    );
+  }
+}
+
 export default function Root() {
+  return <ErrorBoundary><RootInner /></ErrorBoundary>;
+}
+
+function RootInner() {
   const [checking, setChecking] = useState(true);
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -134,54 +184,72 @@ export default function Root() {
       p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms)),
     ]);
 
+    // 마지막 안전장치: 무슨 일이 있어도 20초 뒤에는 로딩을 끝낸다.
+    // (여기서 갇히면 사용자에겐 그냥 "안 켜지는 앱"으로 보이기 때문)
+    const hardStop = setTimeout(() => { if (!cancelled) setChecking(false); }, 20000);
+
     (async () => {
-      let s = null;
       try {
-        s = await withTimeout(getSession(), 15000);
-      } catch (e) { /* 느린 네트워크 — 아래에서 저장된 로그인으로 판단 */ }
-      if (cancelled) return;
-
-      if (s) {
-        setSession(s);
-        setChecking(false);
-        afterLogin();
-        return;
-      }
-
-      // 세션 확인엔 실패했지만 이 폰에 로그인 기록이 있으면 로그인 화면으로 보내지 않는다.
-      // (네트워크가 느리다는 이유로 로그아웃된 것처럼 보이던 문제)
-      if (await hasStoredSession()) {
+        let s = null;
+        try {
+          s = await withTimeout(getSession(), 15000);
+        } catch (e) { /* 느린 네트워크 — 아래에서 저장된 로그인으로 판단 */ }
         if (cancelled) return;
-        setAssumeLoggedIn(true);
-        setChecking(false);
-        // 백그라운드에서 계속 재시도 — 성공하면 정상 세션으로 전환
-        (async () => {
-          for (let i = 0; i < 5 && !cancelled; i++) {
-            await new Promise(r => setTimeout(r, 3000 * (i + 1)));
-            try {
-              const s2 = await getSession();
-              if (s2 && !cancelled) { setSession(s2); afterLogin(); return; }
-            } catch (e) { /* 다음 시도 */ }
-          }
-        })();
-        return;
-      }
 
-      setChecking(false); // 정말 로그인한 적이 없음 → 로그인 화면
+        if (s) {
+          setSession(s);
+          afterLogin();
+          return;
+        }
+
+        // 세션 확인엔 실패했지만 이 폰에 로그인 기록이 있으면 로그인 화면으로 보내지 않는다.
+        // (네트워크가 느리다는 이유로 로그아웃된 것처럼 보이던 문제)
+        let stored = false;
+        try { stored = await hasStoredSession(); } catch (e) { stored = false; }
+        if (cancelled) return;
+
+        if (stored) {
+          setAssumeLoggedIn(true);
+          // 백그라운드에서 계속 재시도 — 성공하면 정상 세션으로 전환
+          (async () => {
+            for (let i = 0; i < 5 && !cancelled; i++) {
+              await new Promise(r => setTimeout(r, 3000 * (i + 1)));
+              try {
+                const s2 = await getSession();
+                if (s2 && !cancelled) { setSession(s2); afterLogin(); return; }
+              } catch (e) { /* 다음 시도 */ }
+            }
+          })();
+        }
+        // stored가 false면 정말 로그인한 적이 없음 → 로그인 화면
+      } finally {
+        // 어떤 경로로 끝나든 로딩은 반드시 해제된다.
+        if (!cancelled) setChecking(false);
+      }
     })();
 
-    const sub = onAuthChange(async (s, event) => {
-      // 사용자가 직접 로그아웃한 경우에만 세션을 비운다.
-      // 토큰 갱신 실패 등으로 일시적으로 null이 와도 로그아웃시키지 않음.
-      if (!s) {
-        if (event === 'SIGNED_OUT') { setSession(null); setAssumeLoggedIn(false); setProfile(null); }
-        return;
-      }
-      setSession(s);
-      setAssumeLoggedIn(false);
-      await afterLogin();
-    });
-    return () => { cancelled = true; sub.unsubscribe(); };
+    let sub = null;
+    try {
+      sub = onAuthChange(async (s, event) => {
+        try {
+          // 사용자가 직접 로그아웃한 경우에만 세션을 비운다.
+          // 토큰 갱신 실패 등으로 일시적으로 null이 와도 로그아웃시키지 않음.
+          if (!s) {
+            if (event === 'SIGNED_OUT') { setSession(null); setAssumeLoggedIn(false); setProfile(null); }
+            return;
+          }
+          setSession(s);
+          setAssumeLoggedIn(false);
+          await afterLogin();
+        } catch (e) { /* 로그인 상태 변화 처리 실패가 앱을 멈추면 안 됨 */ }
+      });
+    } catch (e) { /* 인증 구독 실패해도 앱은 떠야 함 */ }
+
+    return () => {
+      cancelled = true;
+      clearTimeout(hardStop);
+      try { sub && sub.unsubscribe(); } catch (e) { /* 이미 해제됨 */ }
+    };
   }, []);
 
   if (!hasSupabase) return <MainApp profile={null} onSignOut={null} />;
