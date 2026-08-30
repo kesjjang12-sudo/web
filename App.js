@@ -39,7 +39,7 @@ const C = {
   text:'#E5E8EB', sub:'#8B95A1', faint:'#6B7684',
   blue:'#3182F6', blueText:'#4E9BFA', green:'#16C47F', red:'#F04452', gold:'#E5B84B',
 };
-const REV = 'r39'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
+const REV = 'r40'; // OTA 배포마다 +1 (화면 우상단에 표시 — 업데이트 적용 확인용)
 const LOCK_LIMIT = 100000;   // 하루 이만큼 넘게 쓰면 소명 요청
 const MILESTONES = [3, 7, 14, 30, 50, 100, 200, 365];
 // 건강 회복 타임라인 (일 기준)
@@ -189,42 +189,31 @@ function RootInner() {
     const hardStop = setTimeout(() => { if (!cancelled) setChecking(false); }, 20000);
 
     (async () => {
+      // ── 1단계: 인터넷을 전혀 쓰지 않고 화면부터 띄운다 ──
+      // 폰에 저장된 로그인 기록만 보고 판단한다. 이건 인터넷과 무관하게 항상 즉시 끝난다.
+      // (예전엔 여기서 서버에 물어보느라, 인터넷이 느리면 앱이 안 켜진 것처럼 보였음)
+      let stored = false;
+      try { stored = await hasStoredSession(); } catch (e) { stored = false; }
+      if (cancelled) return;
+
+      if (stored) setAssumeLoggedIn(true);
+      setChecking(false); // 화면 표시. 여기서부터는 절대 로딩에 갇히지 않는다.
+
+      // ── 2단계: 진짜 세션 확인은 뒤에서 조용히 (화면을 막지 않음) ──
       try {
-        let s = null;
-        try {
-          s = await withTimeout(getSession(), 15000);
-        } catch (e) { /* 느린 네트워크 — 아래에서 저장된 로그인으로 판단 */ }
-        if (cancelled) return;
+        const s = await withTimeout(getSession(), 15000);
+        if (!cancelled && s) { setSession(s); afterLogin(); return; }
+      } catch (e) { /* 느린 네트워크 — 아래에서 재시도 */ }
 
-        if (s) {
-          setSession(s);
-          afterLogin();
-          return;
+      // 로그인 기록은 있는데 세션 확인이 실패했으면 백그라운드에서 계속 재시도
+      if (stored) {
+        for (let i = 0; i < 5 && !cancelled; i++) {
+          await new Promise(r => setTimeout(r, 3000 * (i + 1)));
+          try {
+            const s2 = await getSession();
+            if (s2 && !cancelled) { setSession(s2); afterLogin(); return; }
+          } catch (e) { /* 다음 시도 */ }
         }
-
-        // 세션 확인엔 실패했지만 이 폰에 로그인 기록이 있으면 로그인 화면으로 보내지 않는다.
-        // (네트워크가 느리다는 이유로 로그아웃된 것처럼 보이던 문제)
-        let stored = false;
-        try { stored = await hasStoredSession(); } catch (e) { stored = false; }
-        if (cancelled) return;
-
-        if (stored) {
-          setAssumeLoggedIn(true);
-          // 백그라운드에서 계속 재시도 — 성공하면 정상 세션으로 전환
-          (async () => {
-            for (let i = 0; i < 5 && !cancelled; i++) {
-              await new Promise(r => setTimeout(r, 3000 * (i + 1)));
-              try {
-                const s2 = await getSession();
-                if (s2 && !cancelled) { setSession(s2); afterLogin(); return; }
-              } catch (e) { /* 다음 시도 */ }
-            }
-          })();
-        }
-        // stored가 false면 정말 로그인한 적이 없음 → 로그인 화면
-      } finally {
-        // 어떤 경로로 끝나든 로딩은 반드시 해제된다.
-        if (!cancelled) setChecking(false);
       }
     })();
 
@@ -428,16 +417,22 @@ function MainApp({ profile, onSignOut }) {
   }, [onSignOut]);
 
   const load = useCallback(async () => {
-    await runRecurringGenerator(); // 도래한 고정지출을 먼저 자동 기록
-    const [p, b, d, q, qd, ex, ch, rec, gl, tg, bk, bal, ct, st] = await Promise.all([
+    // 폰 안에 있는 것만 먼저 읽어서 화면을 채운다.
+    // 인터넷이 필요한 건(응원 메시지 등) 아래에서 따로 가져오므로,
+    // 인터넷이 느려도 가계부는 항상 바로 보인다.
+    try { await runRecurringGenerator(); } catch (e) { /* 고정지출 자동기록 실패는 무시 */ }
+    const [p, b, d, q, qd, ex, rec, gl, tg, bk, bal, ct, st] = await Promise.all([
       getPayments(), getBudgets(), getDiary(), getQuitSettings(), getQuitDates(),
-      getExplanations(), fetchCheers(), getRecurring(), getGoals(),
+      getExplanations(), getRecurring(), getGoals(),
       getKnownTags(), getLastBackupAt(), getBalance(), getCardTargets(),
-      RNAndroidNotificationListener.getPermissionStatus(),
+      RNAndroidNotificationListener.getPermissionStatus().catch(() => 'unknown'),
     ]);
     setPayments(p); setBudgets(b); setDiary(d); setQuitSet(q); setQuitDates(qd);
-    setExplanations(ex); setCheers(ch); setRecurList(rec); setGoals(gl);
+    setExplanations(ex); setRecurList(rec); setGoals(gl);
     setKnownTags(tg); setLastBackup(bk); setBalance(bal); setCardTargets(ct); setPerm(st);
+
+    // 응원 메시지는 서버에서 가져오는 것 — 실패하거나 느려도 화면에 영향 없음
+    fetchCheers().then(ch => setCheers(ch)).catch(() => {});
 
     setDupPairs(await findDuplicates()); // 이미 쌓인 중복 감지
     setSeenApps(await getSeenApps()); setWatchApps(await getWatchApps());
@@ -453,25 +448,29 @@ function MainApp({ profile, onSignOut }) {
   }, []);
 
   useEffect(() => {
-    load();
-    syncAll();
+    load().catch(() => {});
+    syncAll().catch(() => {});
     // 폰에만 있는 데이터(일기/예산/목표 등)를 하루 한 번 자동 백업
     // 단, 폰이 비어 있으면(재설치 직후) 절대 올리지 않는다 — 좋은 백업을 덮어쓰는 사고 방지
     (async () => {
-      if (!(await hasLocalData())) return;
-      const last = await getLastBackupAt();
-      if (!last || Date.now() - new Date(last).getTime() > 86400000) {
-        const res = await backupNow();
-        if (res.ok) setLastBackup(new Date().toISOString());
-      }
+      try {
+        if (!(await hasLocalData())) return;
+        const last = await getLastBackupAt();
+        if (!last || Date.now() - new Date(last).getTime() > 86400000) {
+          const res = await backupNow();
+          if (res.ok) setLastBackup(new Date().toISOString());
+        }
+      } catch (e) { /* 백업 실패가 앱을 멈추면 안 됨 */ }
     })();
-    const sub = AppState.addEventListener('change', st => { if (st === 'active') load(); });
-    const t = setInterval(load, 20000);
+    const sub = AppState.addEventListener('change', st => { if (st === 'active') load().catch(() => {}); });
+    const t = setInterval(() => load().catch(() => {}), 20000);
     return () => { sub.remove(); clearInterval(t); };
   }, [load]);
 
   const onRefresh = useCallback(async () => {
-    setRefreshing(true); await load(); setRefreshing(false);
+    setRefreshing(true);
+    try { await load(); } catch (e) { /* 새로고침 실패해도 화면은 그대로 */ }
+    setRefreshing(false);
   }, [load]);
 
   // ── 보고 있는 달 데이터 ──
