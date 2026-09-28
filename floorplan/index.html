@@ -92,6 +92,8 @@ input[type=color]{width:34px;height:30px;padding:0;border:1px solid var(--line);
 
 #hint{position:absolute;left:50%;transform:translateX(-50%);top:12px;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:5px 12px;font-size:12px;color:var(--muted);z-index:3;box-shadow:var(--shadow);white-space:nowrap}
 #fab{display:none}
+#orbit{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(16px + env(safe-area-inset-bottom,0px));display:flex;gap:8px;z-index:3}
+#orbit .btn{box-shadow:var(--shadow);padding:9px 14px;border-radius:999px}
 .modal{position:fixed;inset:0;background:rgba(10,15,18,.45);display:flex;align-items:center;justify-content:center;z-index:20;padding:16px}
 .modal .box{background:var(--panel);border-radius:16px;padding:18px;max-width:520px;width:100%;display:flex;flex-direction:column;gap:12px;max-height:90%;overflow:auto}
 .modal h3{margin:0;font-size:16px}
@@ -107,6 +109,7 @@ input[type=color]{width:34px;height:30px;padding:0;border:1px solid var(--line);
   #catalog{left:0;right:0;top:auto;bottom:0;width:auto;max-height:58%;border-radius:16px 16px 0 0;padding-bottom:env(safe-area-inset-bottom,0px)}
   #catalog .cat-list{grid-template-columns:repeat(3,1fr)}
   #props{left:10px;right:10px;width:auto;bottom:10px;padding-bottom:calc(14px + env(safe-area-inset-bottom,0px))}
+  #orbit{left:12px;transform:none}
   #fab{display:block;position:absolute;right:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));z-index:3;box-shadow:var(--shadow);padding:10px 16px;border-radius:999px}
   .hide-sm{display:none}
 }
@@ -118,8 +121,8 @@ input[type=color]{width:34px;height:30px;padding:0;border:1px solid var(--line);
     <div class="brand"><b>우리집 3D 배치</b><span id="areaInfo" class="mono"></span></div>
     <div class="tools">
       <div class="seg" role="group" aria-label="보기">
-        <button id="v3d" aria-pressed="true">3D</button>
-        <button id="vTop" aria-pressed="false">평면</button>
+        <button id="vTop" aria-pressed="true">평면</button>
+        <button id="v3d" aria-pressed="false">3D</button>
       </div>
       <div class="seg" role="group" aria-label="벽 높이">
         <button id="wFull" aria-pressed="false">벽 높게</button>
@@ -134,7 +137,7 @@ input[type=color]{width:34px;height:30px;padding:0;border:1px solid var(--line);
   <main>
     <div id="stage"></div>
     <div id="labels"></div>
-    <div id="hint">가구 끌기: 이동 · 빈 곳 끌기: 회전 · 휠/두 손가락: 확대 · R: 90° 회전 · Del: 삭제</div>
+    <div id="hint">가구 끌기: 이동 · 빈 곳 끌기: 화면 이동 · 휠/두 손가락: 확대</div>
 
     <section class="panel" id="catalog" aria-label="가구 목록">
       <div class="cat-head"><h2>가구 추가</h2><button class="btn" id="catClose" style="padding:3px 9px">닫기</button></div>
@@ -170,6 +173,10 @@ input[type=color]{width:34px;height:30px;padding:0;border:1px solid var(--line);
       </div>
     </section>
 
+    <div id="orbit" hidden>
+      <button class="btn" id="orbL" aria-label="왼쪽으로 돌려보기">↺ 돌려보기</button>
+      <button class="btn" id="orbR" aria-label="오른쪽으로 돌려보기">돌려보기 ↻</button>
+    </div>
     <button class="btn primary" id="fab">＋ 가구 추가</button>
   </main>
 </div>
@@ -669,6 +676,10 @@ renderer.domElement.addEventListener('pointercancel', endPointer);
 
 const controls = new OrbitControls(persp, renderer.domElement);
 controls.target.set(0.2, 0, 0.1);
+// 화면이 손가락에 딸려 돌아가지 않도록 회전은 끄고, 끌기는 화면 이동으로만 쓴다. 돌려보기는 버튼으로.
+controls.enableRotate = false; controls.screenSpacePanning = false;
+controls.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
+controls.touches = { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_PAN };
 controls.enableDamping = true; controls.maxPolarAngle = Math.PI*0.48; controls.minDistance = 1.5; controls.maxDistance = 22;
 controls.update();
 const topControls = new OrbitControls(ortho, renderer.domElement);
@@ -683,18 +694,43 @@ function setView(v){
   activeControls = top ? topControls : controls;
   // 평면 보기에서는 해를 거의 머리 위로 옮겨 그림자가 도면을 덮지 않게
   if (top) sun.position.set(0.6, 12, 0.9); else sun.position.set(5, 9, 3);
+  $('orbit').hidden = top;
   $('v3d').setAttribute('aria-pressed', !top); $('vTop').setAttribute('aria-pressed', top);
   resize();
 }
 $('v3d').onclick = ()=>setView('3d');
+let orbitAnim = null;
+function orbitBy(deg){
+  const t = controls.target, off = persp.position.clone().sub(t);
+  const start = Math.atan2(off.x, off.z), r = Math.hypot(off.x, off.z), end = start + deg*Math.PI/180;
+  const t0 = performance.now(), dur = matchMedia('(prefers-reduced-motion:reduce)').matches ? 1 : 350;
+  cancelAnimationFrame(orbitAnim);
+  const step = now => {
+    const k = Math.min(1, (now-t0)/dur), e = k<.5 ? 2*k*k : 1-Math.pow(-2*k+2,2)/2, a = start + (end-start)*e;
+    persp.position.set(t.x + Math.sin(a)*r, persp.position.y, t.z + Math.cos(a)*r);
+    persp.lookAt(t);
+    if (k<1) orbitAnim = requestAnimationFrame(step);
+  };
+  orbitAnim = requestAnimationFrame(step);
+}
+$('orbL').onclick = ()=>orbitBy(-45);
+$('orbR').onclick = ()=>orbitBy(45);
 $('vTop').onclick = ()=>setView('top');
 $('wFull').onclick = ()=>{ wallMode='full'; applyWalls(); $('wFull').setAttribute('aria-pressed',true); $('wLow').setAttribute('aria-pressed',false); };
 $('wLow').onclick  = ()=>{ wallMode='low';  applyWalls(); $('wFull').setAttribute('aria-pressed',false); $('wLow').setAttribute('aria-pressed',true); };
 
+let fitted = false;
 function resize(){
   const w = stage.clientWidth, h = stage.clientHeight;
   renderer.setSize(w,h); labelRenderer.setSize(w,h);
   persp.aspect = w/h; persp.updateProjectionMatrix();
+  // 세로로 긴 폰 화면에서도 집 전체가 들어오도록 처음 한 번만 카메라를 뒤로 뺀다
+  if (!fitted && w>0 && h>0){
+    fitted = true;
+    const f = Math.max(1, 1.15/(w/h));
+    persp.position.sub(controls.target).multiplyScalar(f).add(controls.target);
+    controls.maxDistance = Math.max(22, persp.position.distanceTo(controls.target)*1.5);
+  }
   const planW = 7.2, planH = 6.8, a = w/h;
   let hh = Math.max(planH/2, planW/2/a);
   // 왼쪽 가구 패널에 도면이 가리지 않도록 평면 시점을 옆으로 비켜 둔다
@@ -854,7 +890,7 @@ $('resetBtn').onclick = ()=>{
 };
 
 /* ───────── 렌더 루프 ───────── */
-resize();
+setView('top');
 renderer.setAnimationLoop(()=>{
   activeControls.update();
   renderer.render(scene, camera);
