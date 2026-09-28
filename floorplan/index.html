@@ -77,6 +77,23 @@ main{position:relative;flex:1;min-height:0}
 .rooms .row{display:flex;gap:6px;align-items:center;margin-top:6px}
 .rooms input{flex:1;min-width:0;border:1px solid var(--line);background:var(--panel-2);border-radius:7px;padding:4px 8px;font-size:12.5px}
 
+#concept{right:12px;top:12px;width:300px;max-height:calc(100% - 24px);overflow:auto;padding:12px 14px 14px;display:flex;flex-direction:column;gap:10px}
+.cc-head{display:flex;justify-content:space-between;align-items:center;gap:8px}
+#concept h2{font-size:12px;font-weight:600;color:var(--muted);letter-spacing:.06em;margin:0}
+#ccSeg{display:flex}
+#ccSeg button{flex:1}
+.cc-title{display:flex;align-items:baseline;gap:8px}
+.cc-title b{font-size:17px;font-weight:600;letter-spacing:-.01em}
+.cc-title span{font-size:12px;color:var(--muted)}
+.cc-line{margin:0;font-size:12.5px;line-height:1.55;color:var(--muted)}
+.pal{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.pal div{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);min-width:0}
+.pal i{flex:none;width:18px;height:18px;border-radius:5px;border:1px solid rgba(0,0,0,.14)}
+.pal span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tips{margin:0;display:grid;grid-template-columns:auto 1fr;gap:6px 10px;font-size:12.5px;line-height:1.5}
+.tips dt{font-weight:600;color:var(--ink);white-space:nowrap}
+.tips dd{margin:0;color:var(--muted)}
+.cc-base{font-size:11px;color:var(--muted);border-top:1px solid var(--line);padding-top:8px}
 #props{right:12px;bottom:12px;width:290px;padding:12px 14px 14px;display:flex;flex-direction:column;gap:10px}
 #props .top{display:flex;justify-content:space-between;align-items:center;gap:8px}
 #pName{border:0;background:transparent;font-size:15px;font-weight:600;padding:2px 0;min-width:0;flex:1;border-bottom:1px dashed var(--line);border-radius:0}
@@ -102,7 +119,9 @@ input[type=color]{width:34px;height:30px;padding:0;border:1px solid var(--line);
 .modal img{border-radius:10px;border:1px solid var(--line)}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--ink);color:var(--panel);padding:8px 14px;border-radius:999px;font-size:13px;z-index:30}
 
+@media (max-width:1100px){ #hint{display:none} }
 @media (max-width:760px){
+  #concept{left:10px;right:10px;top:10px;width:auto;max-height:60%}
   header{padding:8px 12px}
   .brand span{display:none}
   #hint{display:none}
@@ -146,6 +165,12 @@ input[type=color]{width:34px;height:30px;padding:0;border:1px solid var(--line);
       <div class="rooms">
         <details><summary>방 이름 바꾸기</summary><div id="roomNames"></div></details>
       </div>
+    </section>
+
+    <section class="panel" id="concept" aria-label="인테리어 컨셉">
+      <div class="cc-head"><h2>인테리어 컨셉</h2><button class="btn" id="ccToggle" style="padding:3px 9px">접기</button></div>
+      <div class="seg" id="ccSeg" role="group" aria-label="컨셉 선택"></div>
+      <div id="ccBody"></div>
     </section>
 
     <section class="panel" id="props" hidden aria-label="선택한 가구">
@@ -251,25 +276,67 @@ const CATALOG = [
   ['욕실','toilet','변기',40,70,75,'#F4F4F2'],
   ['욕실','basin','세면대',55,45,85,'#F4F4F2'],
   ['욕실','washer','세탁기',60,65,85,'#F1F2F3'],
+  ['거실','curtain','커튼',200,5,230,'#CFC7BB'],
+  ['거실','blind','블라인드',200,5,230,'#F2F1EE'],
+  ['주방','washer','미니 건조기',50,45,65,'#EFEFED',45],
+  ['주방','pendant','펜던트 조명',35,35,240,'#EDE3D1'],
+  ['작업','laptop','노트북',34,24,22,'#BFC3C6',73],
   ['기타','gym','운동기구(랙)',110,120,220,'#2E3134'],
   ['기타','mirror','전신거울',50,5,160,'#F2F2F0'],
   ['기타','box','상자(직접 입력)',60,60,60,'#B5AFA5'],
 ];
 const CATS = [...new Set(CATALOG.map(c=>c[0]))];
 const TYPE_KR = {sofa:'소파',armchair:'1인 소파',table:'테이블',tvstand:'TV장',tv:'TV',rug:'러그',lamp:'조명',plant:'화분',bed:'침대',
-  nightstand:'협탁',wardrobe:'수납장',dresser:'서랍장',desk:'책상',chair:'의자',fridge:'냉장고',counter:'싱크대',shelf:'책장',toilet:'변기',basin:'세면대',washer:'세탁기',box:'상자',gym:'운동기구',mirror:'거울'};
+  nightstand:'협탁',wardrobe:'수납장',dresser:'서랍장',desk:'책상',chair:'의자',fridge:'냉장고',counter:'싱크대',shelf:'책장',toilet:'변기',basin:'세면대',washer:'세탁기',box:'상자',gym:'운동기구',mirror:'거울',curtain:'커튼',blind:'블라인드',laptop:'노트북',pendant:'펜던트'};
 const SWATCHES = ['#F1F0EC','#D8CBB6','#C7A27C','#9C7753','#6B4F3A','#8E9AA3','#3E4448','#1B1D1F','#4F7A4E','#B4674B','#6F86A6','#C9BFAF'];
 
 let uid = 1;
-const mk = (type,name,x,z,w,d,h,rot,color,elev=0) => ({ id:'i'+(uid++), type,name,x,z,w,d,h,rot,color,elev });
+const mk = (type,name,x,z,w,d,h,rot,color,elev=0,extra={}) => ({ id:'i'+(uid++), type,name,x,z,w,d,h,rot,color,elev,...extra });
 const pxItem = (type,name,[x1,y1,x2,y2],rot,h,color) => {
   let w=(x2-x1)*S, d=(y2-y1)*S; if (rot%180) [w,d]=[d,w];
   return mk(type,name,mx((x1+x2)/2),mz((y1+y2)/2),w,d,h,rot,color);
 };
-function defaultItems(){
+/* ───────── 인테리어 컨셉 ─────────
+   바닥(밝은 오크)·벽(그레이지)·붙박이(화이트)·검정 유리장은 이미 있는 것이라 그대로 두고,
+   새로 들일 가구·창 가림·침구 색만 컨셉마다 바꾼다 */
+const BASE_TONES = [['바닥','#D9CBB3'],['벽','#E4E1DC'],['붙박이','#F1F0EC'],['유리장','#2A2D30']];
+const CONCEPTS = {
+  rec: { name:'추천', title:'웜 미니멀', line:'밝은 오크 바닥, 그레이지 벽, 화이트 붙박이, 검정 유리장이 섞여 있는 집이라 베이지와 우드를 바탕에 깔고 블랙을 조금씩 넣는 배합이 제일 잘 붙어요.',
+    c:{ table:'#8A6446', tableLeg:'#1E1F21', chair:'#B99372', chairLeg:'#1E1F21', desk:'#B99372', deskLeg:'#1E1F21', deskChair:'#3A3C3E', bed:'#B99372', duvet:'#DCD3C4', night:'#8A6446', rug:'#CBBFAE', lamp:'#EDE3D1', laptop:'#BFC3C6', plant:'#5E7B55', dryer:'#EFEFED',
+        livingWin:['curtain','#CFC7BB','그레이지 린넨 커튼'], bedWin:['curtain','#B8AEA2','그레이지 암막 커튼'] },
+    palette:[['월넛 우드','#8A6446'],['블랙 다리','#1E1F21'],['커튼','#CFC7BB'],['침구','#DCD3C4'],['러그','#CBBFAE'],['식물','#5E7B55']],
+    tips:[['창','거실은 그레이지 린넨 커튼에 화이트 쉬폰 속커튼, 침실은 같은 톤 암막 커튼. 지금 회색 커튼보다 벽지 색과 잘 어울려요.'],
+          ['가구','월넛이나 중간 톤 우드 상판에 블랙 다리. 검정 유리장, 턱걸이 랙과 자연스럽게 이어져요.'],
+          ['수납','붙박이는 화이트 그대로 두고, 새로 사는 수납은 우드나 블랙 중 하나로 통일하세요.'],
+          ['침구','오트밀이나 베이지 린넨. 베개 하나만 짙은 올리브색으로 포인트를 주세요.'],
+          ['조명','전구색(3000K). 식탁 위 펜던트 조명 하나로 거실 분위기가 확 달라져요.']] },
+  modern: { name:'모던', title:'화이트 & 오크', line:'화이트 붙박이와 밝은 바닥을 그대로 살려 집이 넓어 보이게 해요. 색은 최소로 쓰고, 오크 원목으로만 따뜻함을 더해요.',
+    c:{ table:'#C9A97E', tableLeg:'#EDEDEB', chair:'#EDEDEB', chairLeg:'#C9A97E', desk:'#F2F2F0', deskLeg:'#F2F2F0', deskChair:'#A7ACAF', bed:'#D5BF9C', duvet:'#E7E9EB', night:'#D5BF9C', rug:'#DDD8CF', lamp:'#F6F4EF', laptop:'#C8CCCE', plant:'#6B8F5E', dryer:'#F4F4F2',
+        livingWin:['blind','#F2F1EE','화이트 콤비 블라인드'], bedWin:['blind','#CFD1D2','라이트그레이 암막 롤스크린'] },
+    palette:[['오크','#C9A97E'],['화이트','#EDEDEB'],['블라인드','#F2F1EE'],['침구','#E7E9EB'],['러그','#DDD8CF'],['의자','#A7ACAF']],
+    tips:[['창','거실은 화이트 콤비 블라인드, 침실은 라이트그레이 암막 롤스크린. 창틀이 흰색이라 선이 깔끔해져요.'],
+          ['가구','오크 원목 상판에 화이트 다리와 의자. 책상도 화이트로 골라 벽에 묻히게 하세요.'],
+          ['수납','붙박이와 신발장은 화이트 그대로. 수납을 더 사면 무광 화이트로 맞추세요.'],
+          ['침구','화이트나 라이트그레이 무지. 패턴은 빼는 게 좋아요.'],
+          ['조명','주백색(4000K) 천장등에 오크 스탠드 하나.']] },
+  black: { name:'블랙', title:'남자의 방', line:'검정 유리장과 블랙 턱걸이 랙이 이미 있어서 가장 자연스럽게 이어지는 컨셉이에요. 블랙·차콜에 어두운 월넛을 더해 무게감을 줘요.',
+    c:{ table:'#3F3027', tableLeg:'#18191B', chair:'#1E1F21', chairLeg:'#18191B', desk:'#1E1F21', deskLeg:'#18191B', deskChair:'#1E1F21', bed:'#26272A', duvet:'#4A4D52', night:'#1E1F21', rug:'#3E4043', lamp:'#1C1C1C', laptop:'#2B2D30', plant:'#3F5A3A', dryer:'#2A2C2F',
+        livingWin:['blind','#34363A','차콜 우드 블라인드'], bedWin:['curtain','#2F3134','차콜 암막 커튼'] },
+    palette:[['블랙','#1E1F21'],['다크 월넛','#3F3027'],['블라인드','#34363A'],['침구','#4A4D52'],['러그','#3E4043'],['식물','#3F5A3A']],
+    tips:[['창','거실은 차콜 우드 블라인드(블랙 알루미늄도 괜찮아요), 침실은 차콜 암막 커튼. 가로줄 블라인드가 남자 방 느낌을 살려요.'],
+          ['가구','블랙 스틸 프레임에 다크 월넛 상판. 의자, 책상, 협탁은 전부 블랙으로 통일하세요.'],
+          ['수납','화이트 붙박이는 바꾸기 어려우니 새로 사는 수납만 블랙으로.'],
+          ['침구','차콜이나 다크그레이 무지. 시트만 화이트로 해서 너무 어둡지 않게 하세요.'],
+          ['조명','전구색(3000K) 간접조명에 블랙 스탠드. 러그를 다크그레이로 깔면 밝은 바닥 톤이 눌려요.']] },
+};
+const CONCEPT_ORDER = ['rec','modern','black'];
+
+function defaultItems(cid = 'rec'){
   uid = 1;
-  // 현장 사진 기준 현재 배치. 방향: rot 0 = 남쪽(TV장 쪽)을 봄, 90 = 동쪽(창), 180 = 북쪽, 270 = 서쪽
+  const k = (CONCEPTS[cid] || CONCEPTS.rec).c;
+  // 방향: rot 0 = 남쪽(TV장 쪽)을 봄, 90 = 동쪽(창), 180 = 북쪽, 270 = 서쪽
   return [
+    // 붙박이 · 기존 가구
     pxItem('counter','싱크대',[57,313,92,398],90,0.85,'#F1F0EC'),
     pxItem('washer','세탁기',[57,398,92,430],90,0.85,'#F1F2F3'),
     pxItem('wardrobe','신발장',[57,432,92,465],90,2.2,'#EDEBE6'),
@@ -278,23 +345,37 @@ function defaultItems(){
     pxItem('tvstand','TV장(붙박이)',[150,313,297,345],180,0.45,'#F1F0EC'),
     pxItem('wardrobe','벽장',[303,313,358,345],180,2.3,'#EDEBE6'),
     pxItem('wardrobe','시스템장',[68,530,105,583],0,2.2,'#EDEBE6'),
-    mk('sofa','3인 소파',0.4,0.66,2.1,0.9,0.75,0,'#A9A6A2'),
-    mk('gym','운동기구(랙)',2.2,1.45,1.1,1.2,2.2,0,'#2E3134'),
-    mk('mirror','전신거울',1.75,1.95,0.5,0.05,1.6,180,'#F2F2F0'),
     mk('wardrobe','행거·서랍',mx(160)+0.3,mz(493.5),1.0,0.6,2.1,90,'#EDEBE6'),
-    mk('bed','슈퍼싱글 침대',mx(235)+1.02,-0.6,1.1,2.0,0.5,90,'#EEEEEC'),
     mk('wardrobe','유리장(검정)',mx(222)+0.3,-1.85,1.2,0.6,2.2,90,'#2A2D30'),
-    mk('shelf','폴선반',1.2,-2.62,0.6,0.3,2.3,0,'#F4F4F2'),
-    mk('desk','책상',2.12,-2.42,1.4,0.7,0.73,0,'#F4F4F2'),
-    mk('chair','의자',2.1,-1.9,0.45,0.5,0.8,180,'#2B2D2F'),
     mk('toilet','변기',-0.45,mz(612)+0.35,0.4,0.7,0.75,0,'#F4F4F2'),
     mk('basin','세면대',-1.2,mz(612)+0.225,0.55,0.45,0.85,0,'#F4F4F2'),
+    // 거실: 턱걸이 랙 옆 작업 공간
+    mk('gym','운동기구(랙)',2.25,1.55,1.1,1.2,2.2,0,'#2E3134'),
+    mk('desk','책상',1.35,1.55,1.2,0.6,0.73,270,k.desk,0,{accent:k.deskLeg}),
+    mk('laptop','노트북',1.35,1.55,0.34,0.24,0.22,270,k.laptop,0.73),
+    mk('chair','책상 의자',0.8,1.55,0.45,0.5,0.82,90,k.deskChair,0,{accent:k.deskLeg}),
+    // 거실: 직사각형 식탁 + 의자 2
+    mk('table','식탁',-0.1,0.62,1.2,0.75,0.73,0,k.table,0,{accent:k.tableLeg}),
+    mk('chair','식탁 의자',-0.4,1.25,0.45,0.5,0.82,180,k.chair,0,{accent:k.chairLeg}),
+    mk('chair','식탁 의자',0.2,1.25,0.45,0.5,0.82,180,k.chair,0,{accent:k.chairLeg}),
+    mk('pendant','펜던트 조명',-0.1,0.62,0.35,0.35,2.4,0,k.lamp),
+    mk('plant','화분',-0.75,1.9,0.4,0.4,1.0,0,k.plant),
+    // TV장 위 미니 건조기
+    mk('washer','미니 건조기',-0.45,2.47,0.5,0.45,0.65,180,k.dryer,0.45),
+    mk(k.livingWin[0],k.livingWin[2],2.81,1.14,2.0,0.05,2.3,270,k.livingWin[1]),
+    // 침실: 침대 + 협탁
+    mk('bed','슈퍼싱글 침대',1.78,-1.77,1.1,2.0,0.9,0,k.bed,0,{accent:k.duvet}),
+    mk('nightstand','협탁',2.57,-2.55,0.4,0.4,0.5,0,k.night),
+    mk('lamp','수면등',2.57,-2.55,0.22,0.22,0.4,0,k.lamp,0.5),
+    mk('rug','러그',1.78,-0.5,1.4,0.8,0.01,0,k.rug),
+    mk(k.bedWin[0],k.bedWin[2],2.81,-1.39,2.5,0.05,2.3,270,k.bedWin[1]),
   ];
 }
 
+
 /* ───────── 상태 / 저장 ───────── */
-const KEY = 'floorplan3d_v2';
-let items, rooms;
+const KEY = 'floorplan3d_v3';
+let items, rooms, concept = 'rec', ccOpen = !matchMedia('(max-width:760px)').matches;
 function load(){
   try{
     const s = JSON.parse(localStorage.getItem(KEY));
@@ -303,14 +384,15 @@ function load(){
   return null;
 }
 function persist(){ try{ localStorage.setItem(KEY, JSON.stringify(snapshot())); }catch(e){} }
-function snapshot(){ return { items, rooms: rooms.map(r=>({id:r.id,name:r.name})) }; }
+function snapshot(){ return { concept, items, rooms: rooms.map(r=>({id:r.id,name:r.name})) }; }
 function applyState(s){
   items = s.items.map(o=>({...o}));
+  concept = CONCEPTS[s.concept] ? s.concept : 'rec';
   uid = 1 + Math.max(0, ...items.map(i=>parseInt(String(i.id).slice(1))||0));
   rooms = DEFAULT_ROOMS.map(r=>({ ...r, name:(s.rooms||[]).find(x=>x.id===r.id)?.name ?? r.name }));
 }
 const saved = load();
-applyState(saved || { items: defaultItems(), rooms: [] });
+applyState(saved || { concept:'rec', items: defaultItems('rec'), rooms: [] });
 
 const history = [JSON.stringify(snapshot())];
 function commit(){
@@ -322,7 +404,7 @@ function undo(){
   if (history.length < 2) return;
   history.pop();
   applyState(JSON.parse(history[history.length-1]));
-  rebuildAll(); select(null); persist(); updateUndo(); refreshRoomLabels(); renderRoomInputs();
+  rebuildAll(); select(null); persist(); updateUndo(); refreshRoomLabels(); renderRoomInputs(); renderConcept();
 }
 const $ = id => document.getElementById(id);
 function updateUndo(){ $('undoBtn').disabled = history.length < 2; }
@@ -338,7 +420,7 @@ const labelRenderer = new CSS2DRenderer({ element: labelsEl });
 
 const scene = new THREE.Scene();
 const persp = new THREE.PerspectiveCamera(45, 1, 0.05, 200);
-persp.position.set(6.2, 8.4, -5.6); // 키 큰 붙박이장이 남쪽 벽에 몰려 있어 북동쪽에서 내려다본다
+persp.position.set(0.6, 9.4, -7.4); // 키 큰 붙박이장은 남쪽, 커튼은 동쪽 창에 있어 북쪽에서 내려다본다
 const ortho = new THREE.OrthographicCamera(-5,5,5,-5,0.1,100);
 ortho.position.set(0, 30, 0); ortho.up.set(0,0,-1); ortho.lookAt(0,0,0);
 let camera = persp;
@@ -366,7 +448,7 @@ const woodTex = (w,d) => canvasTex(512,(g,n)=>{
     const off = (r*197)%n;
     for (let k=-1;k<2;k++){
       const l = 30 + ((r*37+k*11)%9);
-      g.fillStyle = `hsl(32, 38%, ${l+30}%)`;
+      g.fillStyle = `hsl(36, 26%, ${l+40}%)`;
       g.fillRect(off + k*n, r*rh, n, rh);
       g.fillStyle = 'rgba(80,50,25,.35)'; g.fillRect(off + k*n, r*rh, 2, rh);
     }
@@ -398,7 +480,7 @@ scene.add(ground);
   }
 }
 // 벽
-const wallSide = new THREE.MeshStandardMaterial({ color:0xF3F3F0, roughness:.95 });
+const wallSide = new THREE.MeshStandardMaterial({ color:0xE6E3DE, roughness:.95 });
 const wallTop  = new THREE.MeshStandardMaterial({ color:0x39424A, roughness:.9 });
 const glassMat = new THREE.MeshStandardMaterial({ color:0x9CC7DB, transparent:true, opacity:.35, roughness:.1 });
 const wallMeshes = [];
@@ -479,19 +561,19 @@ const BUILD = {
     return g;
   },
   armchair(g,o){ return BUILD.sofa(g,o); },
-  bed(g,{w,d,h,color}){
+  bed(g,{w,d,h,color,accent}){
     B(g,w,.28,d,color,0,.02,0);
     for (const sx of [-1,1]) for (const sz of [-1,1]) B(g,.06,.02,.06,'#333',sx*(w/2-.08),0,sz*(d/2-.08));
     B(g,w-.06,.22,d-.1,'#F4F2EE',0,.3,.03,{rough:.95});
     B(g,w,h,.07,shade(color,.9),0,0,-d/2+.035);
     const n = w<1.3?1:2, pw=(w-.2)/n;
     for (let i=0;i<n;i++) B(g,pw-.06,.1,.36,'#FFFFFF',-w/2+.1+pw*(i+.5),.52,-d/2+.3,{rough:1});
-    B(g,w-.02,.06,d*.62,'#DCE3E8',0,.52,d/2-d*.31-.03,{rough:1});
+    B(g,w-.02,.06,d*.62,accent||'#DCE3E8',0,.52,d/2-d*.31-.03,{rough:1});
     return g;
   },
-  table(g,{w,d,h,color}){
+  table(g,{w,d,h,color,accent}){
     B(g,w,.04,d,color,0,h-.04,0,{rough:.55});
-    const leg=shade(color,.7);
+    const leg=accent||shade(color,.7);
     for (const sx of [-1,1]) for (const sz of [-1,1]) B(g,.045,h-.04,.045,leg,sx*(w/2-.07),0,sz*(d/2-.07));
     return g;
   },
@@ -500,9 +582,9 @@ const BUILD = {
     B(g,Math.min(.4,w*.35),.14,d-.06,shade(color,.95),w/2-Math.min(.4,w*.35)/2-.04,h-.18,0);
     return g;
   },
-  chair(g,{w,d,h,color}){
+  chair(g,{w,d,h,color,accent}){
     const sh=.45;
-    for (const sx of [-1,1]) for (const sz of [-1,1]) B(g,.035,sh,.035,shade(color,.8),sx*(w/2-.04),0,sz*(d/2-.05));
+    for (const sx of [-1,1]) for (const sz of [-1,1]) B(g,.035,sh,.035,accent||shade(color,.8),sx*(w/2-.04),0,sz*(d/2-.05));
     B(g,w,.05,d-.04,color,0,sh,.02);
     B(g,w,h-sh-.05,.035,color,0,sh+.05,-d/2+.035);
     return g;
@@ -592,6 +674,34 @@ const BUILD = {
     return g;
   },
   box(g,{w,d,h,color}){ B(g,w,h,d,color,0,0,0); return g; },
+  curtain(g,{w,d,h,color}){
+    const n=Math.max(4,Math.round(w/.11)), fw=w/n, dd=Math.max(d,.04);
+    for (let i=0;i<n;i++) B(g,fw+.004,h-.06,dd*(i%2?.45:1),shade(color,i%2?.9:1),-w/2+fw*(i+.5),0,(i%2?-dd*.2:0),{rough:1});
+    B(g,w+.06,.03,.03,'#8b8f92',0,h-.05,0);
+    return g;
+  },
+  blind(g,{w,d,h,color}){
+    const top=.08, dd=Math.max(d,.03);
+    B(g,w,top,dd,shade(color,.92),0,h-top,0);
+    B(g,w-.02,h-top-.05,.012,color,0,.05,0,{rough:.9});
+    const n=Math.round((h-top)/.09);
+    for (let i=1;i<n;i++) B(g,w-.02,.012,.02,shade(color,.82),0,.05+i*(h-top-.05)/n,.004,{cast:false});
+    return g;
+  },
+  laptop(g,{w,d,h,color}){
+    B(g,w,.015,d,color,0,0,0,{rough:.35});
+    const sc=new THREE.Group(); sc.position.set(0,.015,-d/2); sc.rotation.x=-.25; g.add(sc);
+    B(sc,w,Math.max(h-.015,.1),.008,color,0,0,0,{rough:.35});
+    B(sc,w-.02,Math.max(h-.015,.1)-.02,.002,'#1b2a36',0,.01,.005,{cast:false});
+    return g;
+  },
+  pendant(g,{w,d,h,color}){
+    const r=Math.min(w,d)/2;
+    C(g,.004,.004,.8,'#222',0,h-.8,0,6);
+    const sh=new THREE.Mesh(new THREE.ConeGeometry(r,.22,32,1,true), mat(color,.6,{side:THREE.DoubleSide,emissive:new THREE.Color(color),emissiveIntensity:.2}));
+    sh.position.y=h-.8-.11; sh.castShadow=true; g.add(sh);
+    return g;
+  },
   gym(g,{w,d,h,color}){
     const t=.06;
     for (const sx of [-1,1]) for (const sz of [-1,1]) B(g,t,h,t,color,sx*(w/2-t/2),0,sz*(d/2-t/2));
@@ -643,6 +753,7 @@ function updateSelVisual(){
 function select(it){
   selected = it; updateSelVisual(); fillProps();
   $('props').hidden = !it;
+  if (it && ccOpen && typeof renderConcept==='function'){ ccOpen = false; renderConcept(); resize(); }
   if (it && isSmall()) $('catalog').hidden = true;
   syncFab();
 }
@@ -751,9 +862,10 @@ function resize(){
   const planW = 7.2, planH = 6.8, a = w/h;
   let hh = Math.max(planH/2, planW/2/a);
   // 왼쪽 가구 패널에 도면이 가리지 않도록 평면 시점을 옆으로 비켜 둔다
-  const panelPx = (!isSmall() && !$('catalog').hidden) ? 262 : 0;
-  hh = Math.max(hh, (planW/2) / ((w-panelPx*2)/h));
-  const shift = panelPx/w * hh*a;
+  const leftPx = (!isSmall() && !$('catalog').hidden) ? 262 : 0;
+  const rightPx = (!isSmall() && ccOpen) ? 312 : 0;
+  hh = Math.max(hh, (planW/2) / ((w-leftPx-rightPx)/h));
+  const shift = ((leftPx-rightPx)/2)/w * 2*hh*a;
   ortho.left=-hh*a-shift; ortho.right=hh*a-shift; ortho.top=hh; ortho.bottom=-hh; ortho.updateProjectionMatrix();
 }
 new ResizeObserver(resize).observe(stage);
@@ -894,17 +1006,41 @@ $('shareBtn').onclick = ()=>{
   m.querySelector('#loadCode').onclick = ()=>{
     try{
       const s = JSON.parse(box.value); if (!Array.isArray(s.items)) throw 0;
-      applyState(s); rebuildAll(); select(null); refreshRoomLabels(); renderRoomInputs(); commit(); m.remove(); toast('불러왔어요');
+      applyState(s); rebuildAll(); select(null); refreshRoomLabels(); renderRoomInputs(); renderConcept(); commit(); m.remove(); toast('불러왔어요');
     }catch(e){ toast('코드 형식이 올바르지 않아요'); }
   };
 };
 $('resetBtn').onclick = ()=>{
-  const m = modal(`<h3>처음 배치로 되돌릴까요?</h3><p>지금 배치한 가구가 모두 기본 배치로 바뀝니다. 되돌리기 버튼으로 다시 복구할 수 있어요.</p>
+  const m = modal(`<h3>처음 배치로 되돌릴까요?</h3><p>지금 배치한 가구가 모두 이 컨셉의 기본 배치로 바뀝니다. 되돌리기 버튼으로 다시 복구할 수 있어요.</p>
     <div class="row"><button class="btn danger" id="doReset">초기화</button><button class="btn" data-close style="margin-left:auto">취소</button></div>`);
   m.querySelector('#doReset').onclick = ()=>{
-    applyState({ items: defaultItems(), rooms: [] }); rebuildAll(); select(null); refreshRoomLabels(); renderRoomInputs(); commit(); m.remove();
+    applyState({ concept, items: defaultItems(concept), rooms: [] }); rebuildAll(); select(null); refreshRoomLabels(); renderRoomInputs(); commit(); m.remove();
   };
 };
+
+/* ───────── 컨셉 패널 ───────── */
+function renderConcept(){
+  const C = CONCEPTS[concept];
+  $('ccSeg').innerHTML = CONCEPT_ORDER.map(id=>`<button data-cc="${id}" aria-pressed="${id===concept}">${CONCEPTS[id].name}</button>`).join('');
+  const sw = ([n,c]) => `<div><i style="background:${c}"></i><span>${n}</span></div>`;
+  $('ccBody').hidden = !ccOpen;
+  $('ccToggle').textContent = ccOpen ? '접기' : '펼치기';
+  $('ccBody').innerHTML = `<div style="display:flex;flex-direction:column;gap:10px">
+    <div class="cc-title"><b>${C.title}</b><span>${C.name}</span></div>
+    <p class="cc-line">${C.line}</p>
+    <div class="pal">${C.palette.map(sw).join('')}</div>
+    <dl class="tips">${C.tips.map(([k,v])=>`<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>
+    <div class="cc-base">그대로 두는 것 · <span class="mono">${BASE_TONES.map(([n])=>n).join(' · ')}</span></div>
+  </div>`;
+}
+$('ccSeg').addEventListener('click', e=>{
+  const id = e.target.dataset.cc; if (!id || id===concept) return;
+  concept = id;
+  items = defaultItems(id); rebuildAll(); select(null); commit(); renderConcept();
+  toast(`${CONCEPTS[id].name} 컨셉을 적용했어요 · 되돌리기로 이전 배치 복구`);
+});
+$('ccToggle').onclick = ()=>{ ccOpen = !ccOpen; renderConcept(); resize(); };
+renderConcept(); resize();
 
 /* ───────── 렌더 루프 ───────── */
 setView('top');
