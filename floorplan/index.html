@@ -195,7 +195,8 @@ import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer
 /* ───────── 도면 좌표 ─────────
    원본 도면 이미지의 픽셀 좌표를 그대로 옮겨 적고, 치수선(2480mm 등)으로 맞춘 비율(1px ≈ 18.5mm)로 미터 변환 */
 const S = 0.0185, CX = 203.5, CY = 462.5, WALL_H = 2.4, LOW_H = 1.0;
-const mx = p => (p - CX) * S, mz = p => (p - CY) * S;
+// 원본 도면은 실제 집과 좌우(위아래)가 뒤집혀 있어 z축을 반전한다 (현장 사진으로 확인)
+const mx = p => (p - CX) * S, mz = p => (CY - p) * S;
 const rectM = ([x1,y1,x2,y2]) => ({ x:(mx(x1)+mx(x2))/2, z:(mz(y1)+mz(y2))/2, w:(x2-x1)*S, d:(y2-y1)*S });
 
 // [x1,y1,x2,y2, y0, y1, kind]  kind: wall | glass
@@ -214,7 +215,7 @@ const WALLS = [
 ];
 const DEFAULT_ROOMS = [
   { id:'living', name:'거실',   rects:[[160,313,358,452]] },
-  { id:'kitchen',name:'주방',   rects:[[57,313,150,452]], labelAt:[118,400] },
+  { id:'kitchen',name:'주방',   rects:[[57,313,150,452]], labelAt:[118,385] },
   { id:'entry',  name:'현관',   rects:[[57,468,100,525]], floor:'stone' },
   { id:'dress',  name:'드레스룸', rects:[[160,462,230,525]] },
   { id:'bath',   name:'화장실', rects:[[110,530,198,583],[110,583,198,612]], floor:'tile' },
@@ -250,11 +251,13 @@ const CATALOG = [
   ['욕실','toilet','변기',40,70,75,'#F4F4F2'],
   ['욕실','basin','세면대',55,45,85,'#F4F4F2'],
   ['욕실','washer','세탁기',60,65,85,'#F1F2F3'],
+  ['기타','gym','운동기구(랙)',110,120,220,'#2E3134'],
+  ['기타','mirror','전신거울',50,5,160,'#F2F2F0'],
   ['기타','box','상자(직접 입력)',60,60,60,'#B5AFA5'],
 ];
 const CATS = [...new Set(CATALOG.map(c=>c[0]))];
 const TYPE_KR = {sofa:'소파',armchair:'1인 소파',table:'테이블',tvstand:'TV장',tv:'TV',rug:'러그',lamp:'조명',plant:'화분',bed:'침대',
-  nightstand:'협탁',wardrobe:'수납장',dresser:'서랍장',desk:'책상',chair:'의자',fridge:'냉장고',counter:'싱크대',shelf:'책장',toilet:'변기',basin:'세면대',washer:'세탁기',box:'상자'};
+  nightstand:'협탁',wardrobe:'수납장',dresser:'서랍장',desk:'책상',chair:'의자',fridge:'냉장고',counter:'싱크대',shelf:'책장',toilet:'변기',basin:'세면대',washer:'세탁기',box:'상자',gym:'운동기구',mirror:'거울'};
 const SWATCHES = ['#F1F0EC','#D8CBB6','#C7A27C','#9C7753','#6B4F3A','#8E9AA3','#3E4448','#1B1D1F','#4F7A4E','#B4674B','#6F86A6','#C9BFAF'];
 
 let uid = 1;
@@ -265,32 +268,32 @@ const pxItem = (type,name,[x1,y1,x2,y2],rot,h,color) => {
 };
 function defaultItems(){
   uid = 1;
+  // 현장 사진 기준 현재 배치. 방향: rot 0 = 남쪽(TV장 쪽)을 봄, 90 = 동쪽(창), 180 = 북쪽, 270 = 서쪽
   return [
-    pxItem('counter','싱크대',[57,313,126,345],0,0.85,'#F1F0EC'),
-    pxItem('fridge','냉장고',[126,313,150,345],0,1.8,'#D8DCDD'),
-    pxItem('tvstand','TV장(붙박이)',[150,313,297,345],0,0.45,'#E9E6E0'),
-    pxItem('wardrobe','팬트리',[57,345,92,425],90,2.2,'#EDEBE6'),
+    pxItem('counter','싱크대',[57,313,92,398],90,0.85,'#F1F0EC'),
+    pxItem('washer','세탁기',[57,398,92,430],90,0.85,'#F1F2F3'),
     pxItem('wardrobe','신발장',[57,432,92,465],90,2.2,'#EDEBE6'),
-    pxItem('wardrobe','시스템장',[68,530,105,583],180,2.2,'#EDEBE6'),
-    mk('tv','TV 65인치',0.9,-2.6,1.45,0.08,0.85,0,'#1B1D1F',0.45),
-    mk('rug','러그',0.9,-1.25,2.0,1.6,0.01,0,'#C9BFAF'),
-    mk('sofa','3인 소파',0.9,-0.65,2.1,0.9,0.8,180,'#8E9AA3'),
-    mk('table','소파 테이블',0.9,-1.55,1.0,0.5,0.4,0,'#6B4F3A'),
-    mk('lamp','스탠드 조명',2.3,-0.45,0.4,0.4,1.6,0,'#E8DCC4'),
-    mk('plant','화분',2.55,-1.95,0.45,0.45,1.1,0,'#4F7A4E'),
-    mk('table','4인 식탁',-1.45,-1.4,1.2,0.75,0.73,90,'#9C7753'),
-    mk('chair','의자',-0.82,-1.7,0.45,0.5,0.85,270,'#3E4448'),
-    mk('chair','의자',-0.82,-1.1,0.45,0.5,0.85,270,'#3E4448'),
-    mk('bed','퀸 침대',1.75,1.74,1.5,2.05,0.95,180,'#A48262'),
-    mk('nightstand','협탁',0.72,2.55,0.45,0.4,0.5,180,'#C7A27C'),
-    mk('wardrobe','옷장',-0.5,0.58,1.0,0.6,2.1,90,'#EDEBE6'),
-    mk('toilet','변기',-0.45,2.42,0.4,0.7,0.75,180,'#F4F4F2'),
-    mk('basin','세면대',-1.2,2.545,0.55,0.45,0.85,180,'#F4F4F2'),
+    pxItem('wardrobe','키큰장',[92,313,126,345],180,2.3,'#F1F0EC'),
+    pxItem('fridge','냉장고장',[126,313,150,345],180,2.3,'#F1F0EC'),
+    pxItem('tvstand','TV장(붙박이)',[150,313,297,345],180,0.45,'#F1F0EC'),
+    pxItem('wardrobe','벽장',[303,313,358,345],180,2.3,'#EDEBE6'),
+    pxItem('wardrobe','시스템장',[68,530,105,583],0,2.2,'#EDEBE6'),
+    mk('sofa','3인 소파',0.4,0.66,2.1,0.9,0.75,0,'#A9A6A2'),
+    mk('gym','운동기구(랙)',2.2,1.45,1.1,1.2,2.2,0,'#2E3134'),
+    mk('mirror','전신거울',1.75,1.95,0.5,0.05,1.6,180,'#F2F2F0'),
+    mk('wardrobe','행거·서랍',mx(160)+0.3,mz(493.5),1.0,0.6,2.1,90,'#EDEBE6'),
+    mk('bed','슈퍼싱글 침대',mx(235)+1.02,-0.6,1.1,2.0,0.5,90,'#EEEEEC'),
+    mk('wardrobe','유리장(검정)',mx(222)+0.3,-1.85,1.2,0.6,2.2,90,'#2A2D30'),
+    mk('shelf','폴선반',1.2,-2.62,0.6,0.3,2.3,0,'#F4F4F2'),
+    mk('desk','책상',2.12,-2.42,1.4,0.7,0.73,0,'#F4F4F2'),
+    mk('chair','의자',2.1,-1.9,0.45,0.5,0.8,180,'#2B2D2F'),
+    mk('toilet','변기',-0.45,mz(612)+0.35,0.4,0.7,0.75,0,'#F4F4F2'),
+    mk('basin','세면대',-1.2,mz(612)+0.225,0.55,0.45,0.85,0,'#F4F4F2'),
   ];
 }
 
 /* ───────── 상태 / 저장 ───────── */
-const KEY = 'floorplan3d_v1';
+const KEY = 'floorplan3d_v2';
 let items, rooms;
 function load(){
   try{
@@ -335,7 +338,7 @@ const labelRenderer = new CSS2DRenderer({ element: labelsEl });
 
 const scene = new THREE.Scene();
 const persp = new THREE.PerspectiveCamera(45, 1, 0.05, 200);
-persp.position.set(1.2, 8.2, 8.4);
+persp.position.set(6.2, 8.4, -5.6); // 키 큰 붙박이장이 남쪽 벽에 몰려 있어 북동쪽에서 내려다본다
 const ortho = new THREE.OrthographicCamera(-5,5,5,-5,0.1,100);
 ortho.position.set(0, 30, 0); ortho.up.set(0,0,-1); ortho.lookAt(0,0,0);
 let camera = persp;
@@ -589,6 +592,20 @@ const BUILD = {
     return g;
   },
   box(g,{w,d,h,color}){ B(g,w,h,d,color,0,0,0); return g; },
+  gym(g,{w,d,h,color}){
+    const t=.06;
+    for (const sx of [-1,1]) for (const sz of [-1,1]) B(g,t,h,t,color,sx*(w/2-t/2),0,sz*(d/2-t/2));
+    for (const sz of [-1,1]) B(g,w,t,t,color,0,h-t,sz*(d/2-t/2));
+    for (const sx of [-1,1]) B(g,t,t,d,color,sx*(w/2-t/2),h-t,0);
+    for (const sx of [-1,1]) B(g,t,t,d,color,sx*(w/2-t/2),0,0);
+    B(g,.3,.06,d*.85,'#1f2123',0,.42,0); B(g,.05,.4,.05,'#1f2123',0,0,0);
+    return g;
+  },
+  mirror(g,{w,d,h,color}){
+    B(g,w,h,Math.max(d,.03),color,0,0,0,{rough:.5});
+    B(g,w-.05,h-.05,.004,mat('#C9D6DC',.05,{metalness:.6}),0,.025,Math.max(d,.03)/2+.002,{cast:false});
+    return g;
+  },
 };
 
 const itemsGroup = new THREE.Group(); scene.add(itemsGroup);
