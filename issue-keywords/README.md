@@ -10,6 +10,7 @@ python issues.py              # 리포트 (마크다운)
 python issues.py --summary    # 휴대폰 알림용 한 줄
 python issues.py --hours 6    # 시작한 지 6시간 이내 키워드만
 python issues.py --json       # 원자료
+python expand.py "청년도약계좌" # 주제 하나 → 실제 검색어 목록 (블로그 키워드)
 ```
 
 한 번 도는 데 1분쯤 걸립니다 (자동완성을 키워드마다 네 번씩 물어봐서).
